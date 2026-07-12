@@ -207,7 +207,7 @@ const getVerificationEmailTemplate = (user, verificationUrl) => {
       <tr>
         <td style="text-align: center; padding-top: 8px;">
           <p style="margin: 0; font-size: 13px; color: ${MUTED};">
-            Need help? Contact us at <a href="mailto:support@yourplatform.com" style="color: ${BRAND_COLOR}; text-decoration: none;">support@yourplatform.com</a>
+            Need help? Contact us at <a href="mailto:support@9jatradies.com" style="color: ${BRAND_COLOR}; text-decoration: none;">support@9jatradies.com</a>
           </p>
         </td>
       </tr>

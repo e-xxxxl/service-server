@@ -6,7 +6,7 @@ const emailService = require('../services/emailService');
 
 class AuthController {
 
-  static async signup(req, res) {
+static async signup(req, res) {
     try {
       const { fullName, email, password, accountType = 'customer', phone, companyName, serviceType } = req.body;
 
@@ -19,19 +19,21 @@ class AuthController {
         });
       }
 
-      // Create user
+      // Generate verification token
+      const verificationToken = crypto.randomBytes(32).toString('hex');
+
+      // Create user WITH the verification token
       const user = await User.create({
         fullName,
         email: email.toLowerCase(),
         password,
         accountType,
-        phone
+        phone,
+        emailVerificationToken: verificationToken, // SAVE THE TOKEN
+        isEmailVerified: false
       });
 
       // Send verification email
-      const verificationToken = crypto.randomBytes(32).toString('hex');
-      // You can save token in DB if you want extra security, but for simplicity we'll send plain token
-
       await emailService.sendVerificationEmail(user, verificationToken);
 
       res.status(201).json({
@@ -48,8 +50,8 @@ class AuthController {
       });
     }
   }
-
-  static async login(req, res) {
+  
+static async login(req, res) {
     try {
       const { email, password } = req.body;
 
@@ -92,20 +94,39 @@ class AuthController {
     }
   }
 
-  static async verifyEmail(req, res) {
+static async verifyEmail(req, res) {
     try {
       const { token } = req.params;
-      // In simple version, we can verify without storing token in DB
-      // But for better security, you should store it. This is the simple version.
+      
+      // First, check if there's a user with this token
+      const user = await User.findOne({ 
+        emailVerificationToken: token
+      });
 
-      const user = await User.findOne({ emailVerificationToken: token });
-
+      // If no user found with this token, check if maybe they're already verified
       if (!user) {
-        return res.status(400).json({ success: false, message: 'Invalid or expired token' });
+        // You could check if the token was recently used (optional, for better UX)
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid or expired verification token' 
+        });
       }
 
+      // If user is already verified, return success
+      if (user.isEmailVerified) {
+        const authToken = JWTService.generateToken(user);
+        return res.status(200).json({
+          success: true,
+          message: 'Email already verified',
+          token: authToken,
+          user: user.toJSON()
+        });
+      }
+
+      // Verify the user
       user.isEmailVerified = true;
-      user.emailVerificationToken = undefined; // clear token
+      user.emailVerificationToken = undefined;
+      user.emailVerifiedAt = new Date(); // Set verification date
       await user.save();
 
       const authToken = JWTService.generateToken(user);
@@ -118,10 +139,13 @@ class AuthController {
       });
 
     } catch (error) {
-      res.status(500).json({ success: false, message: 'Verification failed' });
+      console.error('Verification error:', error);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Verification failed' 
+      });
     }
   }
-
   static async resendVerification(req, res) {
     try {
       const { email } = req.body;

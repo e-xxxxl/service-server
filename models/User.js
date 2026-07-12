@@ -30,6 +30,7 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  emailVerificationToken: String, // ADD THIS FIELD
   emailVerifiedAt: Date,
   lastLogin: Date,
   loginAttempts: {
@@ -108,6 +109,7 @@ userSchema.set('toJSON', {
     delete ret.refreshToken;
     delete ret.loginAttempts;
     delete ret.lockUntil;
+    delete ret.emailVerificationToken; // Also remove token from JSON output for security
     delete ret.__v;
     return ret;
   }
