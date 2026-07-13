@@ -1,14 +1,43 @@
 // controllers/authController.js
 const User = require('../models/User');
+const ServiceProvider = require('../models/ServiceProvider');
 const JWTService = require('../config/jwt');
 const crypto = require('crypto');
 const emailService = require('../services/emailService');
 
 class AuthController {
 
-static async signup(req, res) {
+  static async signup(req, res) {
     try {
-      const { fullName, email, password, accountType = 'customer', phone, companyName, serviceType } = req.body;
+      const { 
+        fullName, 
+        email, 
+        password, 
+        accountType = 'customer', 
+        phone,
+        // Provider-specific fields
+        companyName,
+        serviceType,
+        state,
+        city
+      } = req.body;
+
+      // Validate provider fields if account type is provider
+      if (accountType === 'provider') {
+        const missingFields = [];
+        if (!companyName?.trim()) missingFields.push('Company name');
+        if (!serviceType?.trim()) missingFields.push('Service type');
+        if (!state?.trim()) missingFields.push('State');
+        if (!city?.trim()) missingFields.push('City');
+        if (!phone?.trim()) missingFields.push('Phone number');
+        
+        if (missingFields.length > 0) {
+          return res.status(400).json({
+            success: false,
+            message: `Required fields missing: ${missingFields.join(', ')}`
+          });
+        }
+      }
 
       // Check if user exists
       const existingUser = await User.findOne({ email: email.toLowerCase() });
@@ -22,16 +51,50 @@ static async signup(req, res) {
       // Generate verification token
       const verificationToken = crypto.randomBytes(32).toString('hex');
 
-      // Create user WITH the verification token
+      // Create user
       const user = await User.create({
         fullName,
         email: email.toLowerCase(),
         password,
         accountType,
-        phone,
-        emailVerificationToken: verificationToken, // SAVE THE TOKEN
+        phone: phone || '',
+        emailVerificationToken: verificationToken,
         isEmailVerified: false
       });
+
+      // If provider, create provider profile with location
+      if (accountType === 'provider') {
+        const providerData = {
+          user: user._id,
+          companyName: companyName.trim(),
+          serviceType: serviceType.toLowerCase().trim(),
+          city: city.trim(),
+          state: state.trim(),
+          businessAddress: {
+            city: city.trim(),
+            state: state.trim()
+          },
+          serviceArea: [{
+            city: city.trim(),
+            state: state.trim(),
+            radius: 50
+          }],
+          isAvailable: true
+        };
+
+        const providerProfile = await ServiceProvider.create(providerData);
+
+        // Link profile to user
+        user.providerProfile = providerProfile._id;
+        await user.save();
+
+        console.log('Provider profile created:', {
+          userId: user._id,
+          profileId: providerProfile._id,
+          companyName: providerProfile.companyName,
+          location: `${providerProfile.city}, ${providerProfile.state}`
+        });
+      }
 
       // Send verification email
       await emailService.sendVerificationEmail(user, verificationToken);
@@ -39,23 +102,38 @@ static async signup(req, res) {
       res.status(201).json({
         success: true,
         message: 'Account created. Please check your email to verify.',
-        data: { email: user.email }
+        data: { 
+          email: user.email,
+          accountType: user.accountType,
+          userId: user._id
+        }
       });
 
     } catch (error) {
       console.error('Signup error:', error);
+      
+      if (error.name === 'ValidationError') {
+        const messages = Object.values(error.errors).map(err => err.message);
+        return res.status(400).json({
+          success: false,
+          message: messages.join('. ')
+        });
+      }
+      
       res.status(500).json({
         success: false,
         message: 'Failed to create account'
       });
     }
   }
-  
-static async login(req, res) {
+
+  static async login(req, res) {
     try {
       const { email, password } = req.body;
 
-      const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+      const user = await User.findOne({ email: email.toLowerCase() })
+        .select('+password')
+        .populate('providerProfile');
 
       if (!user || !(await user.comparePassword(password))) {
         return res.status(401).json({
@@ -73,46 +151,73 @@ static async login(req, res) {
         });
       }
 
+      // Update last login
+      user.lastLogin = new Date();
+      await user.save();
+
       const token = JWTService.generateToken(user);
+
+      // Build response with provider data if applicable
+      const userResponse = {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        accountType: user.accountType,
+        phone: user.phone,
+      };
+
+      // Include provider profile if exists
+      if (user.providerProfile) {
+        userResponse.providerProfile = {
+          id: user.providerProfile._id,
+          companyName: user.providerProfile.companyName,
+          serviceType: user.providerProfile.serviceType,
+          city: user.providerProfile.city,
+          state: user.providerProfile.state,
+          isAvailable: user.providerProfile.isAvailable,
+          rating: user.providerProfile.rating,
+          completedJobs: user.providerProfile.completedJobs
+        };
+      }
+
+      console.log('Login successful:', {
+        email: user.email,
+        accountType: user.accountType,
+        hasProviderProfile: !!user.providerProfile
+      });
 
       res.status(200).json({
         success: true,
         message: 'Login successful',
         token,
-        user: {
-          _id: user._id,
-          fullName: user.fullName,
-          email: user.email,
-          accountType: user.accountType,
-          phone: user.phone
-        }
+        user: userResponse
       });
 
     } catch (error) {
       console.error('Login error:', error);
-      res.status(500).json({ success: false, message: 'Login failed' });
+      res.status(500).json({ 
+        success: false, 
+        message: 'Login failed',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
     }
   }
-
-static async verifyEmail(req, res) {
+  
+  static async verifyEmail(req, res) {
     try {
       const { token } = req.params;
       
-      // First, check if there's a user with this token
       const user = await User.findOne({ 
-        emailVerificationToken: token
+        emailVerificationToken: token 
       });
 
-      // If no user found with this token, check if maybe they're already verified
       if (!user) {
-        // You could check if the token was recently used (optional, for better UX)
         return res.status(400).json({ 
           success: false, 
           message: 'Invalid or expired verification token' 
         });
       }
 
-      // If user is already verified, return success
       if (user.isEmailVerified) {
         const authToken = JWTService.generateToken(user);
         return res.status(200).json({
@@ -123,10 +228,9 @@ static async verifyEmail(req, res) {
         });
       }
 
-      // Verify the user
       user.isEmailVerified = true;
       user.emailVerificationToken = undefined;
-      user.emailVerifiedAt = new Date(); // Set verification date
+      user.emailVerifiedAt = new Date();
       await user.save();
 
       const authToken = JWTService.generateToken(user);
@@ -146,6 +250,7 @@ static async verifyEmail(req, res) {
       });
     }
   }
+
   static async resendVerification(req, res) {
     try {
       const { email } = req.body;
@@ -176,10 +281,31 @@ static async verifyEmail(req, res) {
 
   static async verifyToken(req, res) {
     try {
-      const user = await User.findById(req.user.id);
-      res.json({ success: true, user: user.toJSON() });
+      const user = await User.findById(req.user.id)
+        .populate('providerProfile');
+      
+      if (!user) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'User not found' 
+        });
+      }
+
+      const userData = user.toJSON();
+      if (user.providerProfile) {
+        userData.providerProfile = user.providerProfile;
+      }
+
+      res.json({ 
+        success: true, 
+        user: userData 
+      });
     } catch (error) {
-      res.status(401).json({ success: false, message: 'Invalid token' });
+      console.error('Token verification error:', error);
+      res.status(401).json({ 
+        success: false, 
+        message: 'Invalid token' 
+      });
     }
   }
 }

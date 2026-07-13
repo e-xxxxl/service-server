@@ -1,4 +1,3 @@
-// models/User.js
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -26,11 +25,21 @@ const userSchema = new mongoose.Schema({
     enum: ['customer', 'provider'],
     default: 'customer'
   },
+  phone: {
+    type: String,
+    trim: true
+  },
+  // Provider reference
+  providerProfile: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ServiceProvider'
+  },
+  // Auth-related fields
   isEmailVerified: {
     type: Boolean,
     default: false
   },
-  emailVerificationToken: String, // ADD THIS FIELD
+  emailVerificationToken: String,
   emailVerifiedAt: Date,
   lastLogin: Date,
   loginAttempts: {
@@ -45,38 +54,27 @@ const userSchema = new mongoose.Schema({
   refreshToken: {
     type: String,
     select: false
-  },
-  phone: {
-    type: String,
-    trim: true
   }
 }, {
   timestamps: true
 });
 
-// ❌ REMOVE THIS - Don't use both index: true and schema.index()
-// userSchema.index({ email: 1 }); // This causes the duplicate warning
-
-// ✅ FIXED pre-save hook - Use async function, not callback with next
+// Password hashing middleware
 userSchema.pre('save', async function() {
-  // Only hash password if it's modified
   if (!this.isModified('password')) return;
-  
   const salt = await bcrypt.genSalt(12);
   this.password = await bcrypt.hash(this.password, salt);
 });
 
-// Compare password method
+// Methods
 userSchema.methods.comparePassword = async function(candidatePassword) {
   return bcrypt.compare(candidatePassword, this.password);
 };
 
-// Check if account is locked
 userSchema.methods.isLocked = function() {
   return this.lockUntil && this.lockUntil > Date.now();
 };
 
-// Increment login attempts
 userSchema.methods.incrementLoginAttempts = async function() {
   if (this.lockUntil && this.lockUntil < Date.now()) {
     return this.updateOne({
@@ -86,7 +84,6 @@ userSchema.methods.incrementLoginAttempts = async function() {
   }
   
   const updates = { $inc: { loginAttempts: 1 } };
-  
   if (this.loginAttempts + 1 >= 5) {
     updates.$set = { lockUntil: Date.now() + 30 * 60 * 1000 };
   }
@@ -94,7 +91,6 @@ userSchema.methods.incrementLoginAttempts = async function() {
   return this.updateOne(updates);
 };
 
-// Reset login attempts
 userSchema.methods.resetLoginAttempts = function() {
   return this.updateOne({
     $set: { loginAttempts: 0 },
@@ -102,19 +98,26 @@ userSchema.methods.resetLoginAttempts = function() {
   });
 };
 
-// Remove password from JSON output
+// Get provider profile
+userSchema.methods.getProviderProfile = async function() {
+  if (this.accountType === 'provider' && this.providerProfile) {
+    return await mongoose.model('ServiceProvider').findById(this.providerProfile);
+  }
+  return null;
+};
+
+// Clean JSON output
 userSchema.set('toJSON', {
   transform: function(doc, ret) {
     delete ret.password;
     delete ret.refreshToken;
     delete ret.loginAttempts;
     delete ret.lockUntil;
-    delete ret.emailVerificationToken; // Also remove token from JSON output for security
+    delete ret.emailVerificationToken;
     delete ret.__v;
     return ret;
   }
 });
 
 const User = mongoose.model('User', userSchema);
-
 module.exports = User;
