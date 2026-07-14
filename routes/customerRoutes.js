@@ -1,17 +1,28 @@
+// routes/customerRoutes.js
 const express = require('express');
 const router = express.Router();
 const CustomerController = require('../controllers/customerController');
-const { protect, authorize } = require('../middleware/auth');
+const { protect } = require('../middleware/auth');
 
-// Protect all routes - only authenticated customers can access
+// Protect all routes
 router.use(protect);
-router.use(authorize('customer'));
 
-// Customer routes
+// Dashboard
 router.get('/dashboard', CustomerController.getDashboard);
+
+// Search
 router.get('/search', CustomerController.searchProfessionals);
+
+// Favorites
 router.post('/favorites/:professionalId', CustomerController.toggleFavorite);
+
+// Messages - Only use methods that exist in the controller
+router.get('/messages', CustomerController.getMessages);
+router.get('/messages/:conversationId', CustomerController.getConversation);
+router.post('/messages/:professionalId', CustomerController.sendMessage);
+
+// Notifications
+router.get('/notifications', CustomerController.getNotifications);
 router.patch('/notifications/:id/read', CustomerController.markNotificationRead);
-router.post('/conversations/:professionalId/messages', CustomerController.sendMessage);
 
 module.exports = router;

@@ -203,13 +203,14 @@ class AuthController {
     }
   }
   
-  static async verifyEmail(req, res) {
+ // controllers/authController.js - Update verifyEmail
+static async verifyEmail(req, res) {
     try {
       const { token } = req.params;
       
       const user = await User.findOne({ 
         emailVerificationToken: token 
-      });
+      }).populate('providerProfile');
 
       if (!user) {
         return res.status(400).json({ 
@@ -220,26 +221,37 @@ class AuthController {
 
       if (user.isEmailVerified) {
         const authToken = JWTService.generateToken(user);
+        const userData = user.toJSON();
+        
         return res.status(200).json({
           success: true,
           message: 'Email already verified',
           token: authToken,
-          user: user.toJSON()
+          user: {
+            ...userData,
+            accountType: user.accountType // Ensure accountType is included
+          }
         });
       }
 
+      // Verify the user
       user.isEmailVerified = true;
       user.emailVerificationToken = undefined;
       user.emailVerifiedAt = new Date();
       await user.save();
 
       const authToken = JWTService.generateToken(user);
+      const userData = user.toJSON();
 
       res.status(200).json({
         success: true,
         message: 'Email verified successfully',
         token: authToken,
-        user: user.toJSON()
+        user: {
+          ...userData,
+          accountType: user.accountType, // Include account type
+          providerProfile: user.providerProfile || null
+        }
       });
 
     } catch (error) {
@@ -250,7 +262,6 @@ class AuthController {
       });
     }
   }
-
   static async resendVerification(req, res) {
     try {
       const { email } = req.body;
@@ -279,32 +290,76 @@ class AuthController {
     }
   }
 
-  static async verifyToken(req, res) {
+ // controllers/authController.js - Update verifyToken method
+static async verifyToken(req, res) {
     try {
+      // Check if user is attached to request
+      if (!req.user || !req.user.id) {
+        return res.status(401).json({
+          success: false,
+          message: 'User not authenticated'
+        });
+      }
+
       const user = await User.findById(req.user.id)
         .populate('providerProfile');
-      
+
       if (!user) {
-        return res.status(404).json({ 
-          success: false, 
-          message: 'User not found' 
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
         });
       }
 
       const userData = user.toJSON();
+      
+      // Include provider profile if exists
       if (user.providerProfile) {
         userData.providerProfile = user.providerProfile;
       }
 
-      res.json({ 
-        success: true, 
-        user: userData 
+      res.json({
+        success: true,
+        user: userData
+      });
+      
+    } catch (error) {
+      console.error('Token verification error:', error.message);
+      res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+  }
+  // controllers/authController.js - Add this method
+static async getCurrentUser(req, res) {
+    try {
+      if (!req.user || !req.user.id) {
+        return res.status(401).json({
+          success: false,
+          message: 'Not authenticated'
+        });
+      }
+
+      const user = await User.findById(req.user.id)
+        .populate('providerProfile');
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      res.json({
+        success: true,
+        user: user.toJSON()
       });
     } catch (error) {
-      console.error('Token verification error:', error);
-      res.status(401).json({ 
-        success: false, 
-        message: 'Invalid token' 
+      console.error('Get current user error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to get user data'
       });
     }
   }

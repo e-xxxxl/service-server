@@ -14,7 +14,7 @@ const protect = async (req, res, next) => {
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: 'Not authorized to access this route'
+        message: 'Not authorized to access this route - No token provided'
       });
     }
 
@@ -23,7 +23,16 @@ const protect = async (req, res, next) => {
       const decoded = JWTService.verifyToken(token);
       
       // Get user from database
-      const user = await User.findById(decoded.id || decoded.userId);
+      const userId = decoded.id || decoded.userId || decoded._id;
+      
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid token structure - no user ID found'
+        });
+      }
+      
+      const user = await User.findById(userId).select('+password');
       
       if (!user) {
         return res.status(401).json({
@@ -32,35 +41,57 @@ const protect = async (req, res, next) => {
         });
       }
 
-      // Attach user to request
+      // Attach user to request object
       req.user = {
         id: user._id,
         email: user.email,
         accountType: user.accountType,
-        fullName: user.fullName
+        fullName: user.fullName,
+        phone: user.phone,
+        isEmailVerified: user.isEmailVerified,
+        providerProfile: user.providerProfile
       };
+
+      console.log('User authenticated:', {
+        id: req.user.id,
+        email: req.user.email,
+        accountType: req.user.accountType
+      });
 
       next();
     } catch (error) {
+      console.error('Token verification failed:', error.message);
       return res.status(401).json({
         success: false,
-        message: 'Not authorized to access this route'
+        message: 'Invalid or expired token'
       });
     }
   } catch (error) {
-    next(error);
+    console.error('Auth middleware error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Authentication error'
+    });
   }
 };
 
-// Optional: Role-based authorization
+// Role-based authorization
 const authorize = (...roles) => {
   return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: 'User not authenticated'
+      });
+    }
+    
     if (!roles.includes(req.user.accountType)) {
       return res.status(403).json({
         success: false,
-        message: `User role '${req.user.accountType}' is not authorized to access this route`
+        message: `Access denied. Required role: ${roles.join(' or ')}`
       });
     }
+    
     next();
   };
 };

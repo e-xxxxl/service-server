@@ -43,39 +43,46 @@ class CustomerController {
           .map(f => f.professional._id.toString())
       );
 
-      const recentPros = recentConvos
-        .filter(c => c.professional)
-        .map(c => {
-          const pro = c.professional;
-          return {
-            id: pro._id.toString(),
-            name: pro.user?.fullName || pro.companyName || 'Unknown Pro',
-            trade: pro.serviceType || 'General Service',
-            location: [pro.city, pro.state].filter(Boolean).join(', ') || 'Nigeria',
-            city: pro.city || '',
-            state: pro.state || '',
-            rating: pro.rating || 0,
-            jobs: pro.completedJobs || 0,
-            years: pro.yearsOfExperience || 0,
-            status: pro.isAvailable ? 'Available now' : 'Currently Unavailable',
-            lastContact: c.lastMessageAt,
-            isFavorited: favoriteProIds.has(pro._id.toString()),
-          };
-        });
+        // controllers/customerController.js - Update getDashboard (the recentPros part)
+const recentPros = recentConvos
+  .filter(c => c.professional)
+  .map(c => {
+    const pro = c.professional;
+    return {
+      id: pro._id.toString(),
+      fullName: pro.user?.fullName || pro.companyName,
+      name: pro.user?.fullName || pro.companyName || 'Unknown Pro',
+      companyName: pro.companyName,
+      trade: pro.serviceType || 'General Service',
+      serviceType: pro.serviceType,
+      location: [pro.city, pro.state].filter(Boolean).join(', ') || 'Location not specified',
+      city: pro.city || '',
+      state: pro.state || '',
+      rating: pro.rating || 0,
+      jobs: pro.completedJobs || 0,
+      years: pro.yearsOfExperience || 0,
+      status: pro.isAvailable ? 'Available now' : 'Currently Unavailable',
+      isVerified: pro.isVerified || false,
+      tagline: pro.tagline || '',
+      lastContact: c.lastMessageAt,
+      isFavorited: favoriteProIds.has(pro._id.toString()),
+    };
+  });
 
-      const conversations = recentConvos
-        .filter(c => c.professional)
-        .map(c => {
-          const pro = c.professional;
-          return {
-            id: c._id.toString(),
-            name: pro.user?.fullName || pro.companyName || 'Unknown',
-            trade: pro.serviceType || 'General Service',
-            preview: (c.messages && c.messages.length > 0) ? c.messages[c.messages.length - 1]?.text || '' : '',
-            time: c.lastMessageAt,
-            unread: c.customerUnread || false,
-          };
-        });
+     const conversations = recentConvos
+  .filter(c => c.professional)
+  .map(c => {
+    const pro = c.professional;
+    return {
+      id: c._id.toString(),
+      professionalId: pro._id.toString(), // ✅ add this
+      name: pro.user?.fullName || pro.companyName || 'Unknown',
+      trade: pro.serviceType || 'General Service',
+      preview: (c.messages && c.messages.length > 0) ? c.messages[c.messages.length - 1]?.text || '' : '',
+      time: c.lastMessageAt,
+      unread: c.customerUnread || false,
+    };
+  });
 
       const profileCompletion = CustomerController._computeProfileCompletion(user);
 
@@ -117,28 +124,53 @@ class CustomerController {
   }
 
   // GET /api/customer/search
-  static async searchProfessionals(req, res) {
+// controllers/customerController.js - Update searchProfessionals
+// controllers/customerController.js - Update searchProfessionals
+static async searchProfessionals(req, res) {
     try {
       const { category, state, city, page = 1, limit = 20 } = req.query;
-
+      
+      console.log('Search request:', { category, state, city });
+      
       const filter = { isAvailable: true };
-
+      
       if (category && category.trim()) {
         filter.serviceType = { $regex: category.trim(), $options: 'i' };
       }
-
+      
       if (state && state.trim()) {
-        filter.state = { $regex: state.trim(), $options: 'i' };
+        // Search in both top-level state and serviceArea.state
+        filter.$or = [
+          { state: { $regex: state.trim(), $options: 'i' } },
+          { 'serviceArea.state': { $regex: state.trim(), $options: 'i' } }
+        ];
       }
-
+      
       if (city && city.trim()) {
-        filter.city = { $regex: city.trim(), $options: 'i' };
+        // If we already have $or from state, we need to handle this differently
+        const cityFilter = {
+          $or: [
+            { city: { $regex: city.trim(), $options: 'i' } },
+            { 'serviceArea.city': { $regex: city.trim(), $options: 'i' } }
+          ]
+        };
+        
+        if (filter.$or) {
+          // Combine state and city filters
+          filter.$and = [
+            { $or: filter.$or },
+            cityFilter
+          ];
+          delete filter.$or;
+        } else {
+          filter.$or = cityFilter.$or;
+        }
       }
-
-      console.log('Search filters:', filter);
-
+      
+      console.log('Search filter:', JSON.stringify(filter, null, 2));
+      
       const skip = (parseInt(page) - 1) * parseInt(limit);
-
+      
       const [providers, total] = await Promise.all([
         ServiceProvider.find(filter)
           .populate('user', 'fullName email phone')
@@ -147,34 +179,47 @@ class CustomerController {
           .limit(parseInt(limit)),
         ServiceProvider.countDocuments(filter)
       ]);
-
-      // Get user's favorites to mark them
-      const userFavorites = req.user ? 
-        await Favorite.find({ customer: req.user.id }).select('professional') : 
-        [];
       
-      const favoriteIds = new Set(
-        userFavorites.map(f => f.professional.toString())
-      );
-
+      console.log(`Found ${providers.length} providers out of ${total} total`);
+      
+      // Format results
       const results = providers.map(provider => ({
         id: provider._id.toString(),
+        fullName: provider.user?.fullName || provider.companyName || 'Unknown',
         name: provider.user?.fullName || provider.companyName || 'Unknown Pro',
         companyName: provider.companyName || '',
         trade: provider.serviceType || 'General',
-        location: [provider.city, provider.state].filter(Boolean).join(', ') || 'Nigeria',
-        city: provider.city || '',
-        state: provider.state || '',
+        serviceType: provider.serviceType || '',
+        // Get location from top-level fields first, fallback to serviceArea
+        city: provider.city || provider.serviceArea?.[0]?.city || '',
+        state: provider.state || provider.serviceArea?.[0]?.state || '',
+        location: [
+          provider.city || provider.serviceArea?.[0]?.city,
+          provider.state || provider.serviceArea?.[0]?.state
+        ].filter(Boolean).join(', ') || 'Location not specified',
         rating: provider.rating || 0,
         jobs: provider.completedJobs || 0,
         years: provider.yearsOfExperience || 0,
         status: provider.isAvailable ? 'Available now' : 'Currently Unavailable',
         isVerified: provider.isVerified || false,
-        profileImage: provider.profileImage || null,
         tagline: provider.tagline || '',
-        isFavorited: favoriteIds.has(provider._id.toString())
+        isFavorited: false // Will be updated below
       }));
-
+      
+      // Mark favorites
+      if (req.user) {
+        const userFavorites = await Favorite.find({ 
+          customer: req.user.id,
+          professional: { $in: providers.map(p => p._id) }
+        }).select('professional');
+        
+        const favoriteIds = new Set(userFavorites.map(f => f.professional.toString()));
+        
+        results.forEach(result => {
+          result.isFavorited = favoriteIds.has(result.id);
+        });
+      }
+      
       res.json({
         success: true,
         data: results,
@@ -185,11 +230,11 @@ class CustomerController {
           limit: parseInt(limit)
         }
       });
-
+      
     } catch (error) {
       console.error('Search error:', error);
-      res.status(500).json({
-        success: false,
+      res.status(500).json({ 
+        success: false, 
         message: 'Search failed',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
@@ -274,16 +319,27 @@ class CustomerController {
   }
 
   // POST /api/customer/conversations/:professionalId/messages
-  static async sendMessage(req, res) {
+ // controllers/customerController.js - Update sendMessage
+static async sendMessage(req, res) {
     try {
       const { professionalId } = req.params;
       const { text } = req.body;
       const userId = req.user.id;
 
       if (!text?.trim()) {
+        return res.status(400).json({ success: false, message: 'Message cannot be empty' });
+      }
+
+      // Filter message for contact info
+      const MessageFilter = require('../middleware/messageFilter');
+      const filterResult = MessageFilter.filterMessage(text);
+
+      if (!filterResult.isClean) {
         return res.status(400).json({
           success: false,
-          message: 'Message text is required'
+          message: 'Contact information detected',
+          warning: filterResult.warning,
+          violations: filterResult.violations
         });
       }
 
@@ -296,6 +352,7 @@ class CustomerController {
         });
       }
 
+      // Find or create conversation
       let conversation = await Conversation.findOne({
         customer: userId,
         professional: professionalId
@@ -309,20 +366,54 @@ class CustomerController {
         });
       }
 
+      // Add message
       conversation.messages.push({
         sender: userId,
         senderModel: 'User',
         text: text.trim()
       });
-      
+
       conversation.lastMessageAt = new Date();
       conversation.customerUnread = false;
       conversation.providerUnread = true;
 
       await conversation.save();
 
-      // Populate the professional for the response
-      await conversation.populate({
+      res.json({
+        success: true,
+        message: 'Message sent successfully',
+        data: {
+          conversationId: conversation._id,
+          messageId: conversation.messages[conversation.messages.length - 1]._id,
+          text: text.trim(),
+          time: new Date()
+        }
+      });
+
+    } catch (error) {
+      console.error('Send message error:', error);
+      res.status(500).json({ success: false, message: 'Failed to send message' });
+    }
+  }
+
+  static _computeProfileCompletion(user) {
+    const fields = ['fullName', 'email', 'phone', 'isEmailVerified'];
+    const filled = fields.filter(f => Boolean(user[f])).length;
+    return Math.round((filled / fields.length) * 100);
+  }
+
+  // Add these methods to customerController.js
+
+// GET /api/customer/messages
+static async getMessages(req, res) {
+    try {
+      const userId = req.user.id;
+      
+      const conversations = await Conversation.find({
+        customer: userId
+      })
+      .sort({ lastMessageAt: -1 })
+      .populate({
         path: 'professional',
         model: 'ServiceProvider',
         populate: {
@@ -332,24 +423,166 @@ class CustomerController {
         }
       });
 
+      const formattedConversations = conversations.map(conv => ({
+        id: conv._id.toString(),
+        professionalId: conv.professional?._id.toString(),
+        name: conv.professional?.user?.fullName || conv.professional?.companyName || 'Unknown',
+        companyName: conv.professional?.companyName,
+        trade: conv.professional?.serviceType,
+        lastMessage: conv.messages[conv.messages.length - 1]?.text || '',
+        lastMessageTime: conv.lastMessageAt,
+        unread: conv.customerUnread || false,
+        messageCount: conv.messages.length
+      }));
+
       res.json({
         success: true,
-        data: conversation
+        data: formattedConversations
       });
     } catch (error) {
-      console.error('Send message error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Could not send message'
-      });
+      console.error('Get messages error:', error);
+      res.status(500).json({ success: false, message: 'Failed to fetch messages' });
     }
   }
 
-  static _computeProfileCompletion(user) {
-    const fields = ['fullName', 'email', 'phone', 'isEmailVerified'];
-    const filled = fields.filter(f => Boolean(user[f])).length;
-    return Math.round((filled / fields.length) * 100);
+  // GET /api/customer/notifications
+  static async getNotifications(req, res) {
+    try {
+      const notifications = await Notification.find({ 
+        user: req.user.id 
+      }).sort({ createdAt: -1 }).limit(50);
+
+      res.json({
+        success: true,
+        data: notifications.map(n => ({
+          id: n._id.toString(),
+          text: n.text || '',
+          time: n.createdAt,
+          kind: n.kind || 'info',
+          read: n.read || false
+        }))
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Failed to fetch notifications' });
+    }
   }
+
+  // GET /api/customer/messages/:conversationId
+  static async getConversation(req, res) {
+    try {
+      const { conversationId } = req.params;
+      
+      const conversation = await Conversation.findOne({
+        _id: conversationId,
+        customer: req.user.id
+      }).populate({
+        path: 'professional',
+        model: 'ServiceProvider',
+        populate: {
+          path: 'user',
+          model: 'User',
+          select: 'fullName'
+        }
+      });
+
+      if (!conversation) {
+        return res.status(404).json({ success: false, message: 'Conversation not found' });
+      }
+
+      // Mark as read
+      conversation.customerUnread = false;
+      await conversation.save();
+
+      res.json({
+        success: true,
+        data: {
+          id: conversation._id.toString(),
+          professionalId: conversation.professional?._id.toString(),
+          name: conversation.professional?.user?.fullName || conversation.professional?.companyName,
+          companyName: conversation.professional?.companyName,
+          messages: conversation.messages.map(msg => ({
+            id: msg._id.toString(),
+            text: msg.text,
+            sender: msg.sender.toString(),
+            senderModel: msg.senderModel,
+            time: msg.createdAt,
+            read: msg.read
+          }))
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Failed to fetch conversation' });
+    }
+  }
+
+  // POST /api/customer/messages/:professionalId
+  static async sendMessage(req, res) {
+    try {
+      const { professionalId } = req.params;
+      const { text } = req.body;
+      const userId = req.user.id;
+
+      if (!text?.trim()) {
+        return res.status(400).json({ success: false, message: 'Message cannot be empty' });
+      }
+
+      // Filter message for contact info
+      const MessageFilter = require('../middleware/messageFilter');
+      const filterResult = MessageFilter.filterMessage(text);
+
+      // If violations found, reject the message
+      if (!filterResult.isClean) {
+        return res.status(400).json({
+          success: false,
+          message: 'Contact information detected',
+          warning: filterResult.warning,
+          violations: filterResult.violations
+        });
+      }
+
+      // Find or create conversation
+      let conversation = await Conversation.findOne({
+        customer: userId,
+        professional: professionalId
+      });
+
+      if (!conversation) {
+        conversation = await Conversation.create({
+          customer: userId,
+          professional: professionalId,
+          messages: []
+        });
+      }
+
+      // Add message
+      conversation.messages.push({
+        sender: userId,
+        senderModel: 'User',
+        text: text.trim()
+      });
+
+      conversation.lastMessageAt = new Date();
+      conversation.customerUnread = false;
+      conversation.providerUnread = true;
+
+      await conversation.save();
+
+      res.json({
+        success: true,
+        message: 'Message sent successfully',
+        data: {
+          messageId: conversation.messages[conversation.messages.length - 1]._id,
+          text: text.trim(),
+          time: new Date()
+        }
+      });
+
+    } catch (error) {
+      console.error('Send message error:', error);
+      res.status(500).json({ success: false, message: 'Failed to send message' });
+    }
+  }
+
 }
 
 module.exports = CustomerController;

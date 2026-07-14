@@ -1,24 +1,23 @@
-// index.js
-
-// index.js - Add this line near the top
-// Force redeploy - v1.0.1
-
-
+// index.js - Updated
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const connectDB = require('./config/database');
+const { initializeSocket } = require('./socket');
+
 const authRoutes = require('./routes/authRoutes');
 const customerRoutes = require('./routes/customerRoutes');
-// index.js - Add provider routes
 const providerRoutes = require('./routes/providerRoutes');
 
-// Add this with your other routes
-
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
+
+// Initialize Socket.io
+const io = initializeSocket(server);
 
 // Middleware
 app.use(helmet());
@@ -35,21 +34,19 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 // Routes
-app.get('/api/health', (req, res) => res.status(200).json({ success: true, message: 'Server is running' }));
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ success: true, message: 'Server is running' });
+});
 
 app.use('/api/auth', authRoutes);
-
 app.use('/api/customer', customerRoutes);
-
 app.use('/api/provider', providerRoutes);
 
-
-// 404 Handler
+// Error handlers
 app.use((req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });
 });
 
-// Global Error Handler
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(err.statusCode || 500).json({
@@ -60,7 +57,10 @@ app.use((err, req, res, next) => {
 
 const startServer = async () => {
   await connectDB();
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  server.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🔌 Socket.io ready for connections`);
+  });
 };
 
 startServer();

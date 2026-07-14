@@ -19,6 +19,18 @@ const serviceProviderSchema = new mongoose.Schema({
     lowercase: true,
     trim: true
   },
+   
+  // ADD THESE TOP-LEVEL LOCATION FIELDS
+  city: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  state: {
+    type: String,
+    trim: true,
+    index: true
+  },
   // New enhanced fields
   businessDescription: {
     type: String,
@@ -202,7 +214,7 @@ serviceProviderSchema.pre('save', function(next) {
   const completedCount = this.profileCompletedSteps.filter(s => s.completed).length;
   this.profileCompletionScore = Math.round((completedCount / steps.length) * 100);
 
-  next();
+  // next();
 });
 
 // Indexes
