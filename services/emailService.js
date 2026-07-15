@@ -190,7 +190,7 @@ const getVerificationEmailTemplate = (user, verificationUrl) => {
     ${note('This link expires in <strong>24 hours</strong> and can only be used once. If you didn\'t create an account with us, you can safely ignore this email.')}
 
     <p style="margin: 28px 0 0 0; font-size: 13.5px; line-height: 1.6; color: ${MUTED};">
-      Questions? Reach us any time at <a href="mailto:support@9jatradies.com" style="color: ${ACCENT_DARK}; text-decoration: none;">support@9jatradies.com</a>.
+      Questions? Reach us any time at <a href="mailto:support@9jatradiespages.com" style="color: ${ACCENT_DARK}; text-decoration: none;">support@9jatradies.com</a>.
     </p>
   `;
 

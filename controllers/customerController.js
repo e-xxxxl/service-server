@@ -44,8 +44,9 @@ class CustomerController {
       );
 
         // controllers/customerController.js - Update getDashboard (the recentPros part)
+   // controllers/customerController.js - Update recentPros in getDashboard
 const recentPros = recentConvos
-  .filter(c => c.professional)
+  .filter(c => c.professional && c.professional.isVisible && c.professional.verificationStatus === 'approved')
   .map(c => {
     const pro = c.professional;
     return {
@@ -62,7 +63,7 @@ const recentPros = recentConvos
       jobs: pro.completedJobs || 0,
       years: pro.yearsOfExperience || 0,
       status: pro.isAvailable ? 'Available now' : 'Currently Unavailable',
-      isVerified: pro.isVerified || false,
+      isVerified: pro.verificationStatus === 'approved',
       tagline: pro.tagline || '',
       lastContact: c.lastMessageAt,
       isFavorited: favoriteProIds.has(pro._id.toString()),
@@ -126,44 +127,49 @@ const recentPros = recentConvos
   // GET /api/customer/search
 // controllers/customerController.js - Update searchProfessionals
 // controllers/customerController.js - Update searchProfessionals
+// controllers/customerController.js - Complete searchProfessionals
 static async searchProfessionals(req, res) {
     try {
       const { category, state, city, page = 1, limit = 20 } = req.query;
       
       console.log('Search request:', { category, state, city });
       
-      const filter = { isAvailable: true };
+      // Only show visible and approved providers to customers
+      const filter = { 
+        isAvailable: true,
+        isVisible: true,
+        verificationStatus: 'approved'
+      };
       
+      // Add category filter
       if (category && category.trim()) {
         filter.serviceType = { $regex: category.trim(), $options: 'i' };
       }
       
+      // Build location filter
+      const locationConditions = [];
+      
       if (state && state.trim()) {
-        // Search in both top-level state and serviceArea.state
-        filter.$or = [
+        locationConditions.push(
           { state: { $regex: state.trim(), $options: 'i' } },
-          { 'serviceArea.state': { $regex: state.trim(), $options: 'i' } }
-        ];
+          { 'serviceArea.state': { $regex: state.trim(), $options: 'i' } },
+          { 'businessAddress.state': { $regex: state.trim(), $options: 'i' } }
+        );
       }
       
       if (city && city.trim()) {
-        // If we already have $or from state, we need to handle this differently
-        const cityFilter = {
-          $or: [
-            { city: { $regex: city.trim(), $options: 'i' } },
-            { 'serviceArea.city': { $regex: city.trim(), $options: 'i' } }
-          ]
-        };
-        
-        if (filter.$or) {
-          // Combine state and city filters
-          filter.$and = [
-            { $or: filter.$or },
-            cityFilter
-          ];
-          delete filter.$or;
+        locationConditions.push(
+          { city: { $regex: city.trim(), $options: 'i' } },
+          { 'serviceArea.city': { $regex: city.trim(), $options: 'i' } },
+          { 'businessAddress.city': { $regex: city.trim(), $options: 'i' } }
+        );
+      }
+      
+      if (locationConditions.length > 0) {
+        if (filter.$and) {
+          filter.$and.push({ $or: locationConditions });
         } else {
-          filter.$or = cityFilter.$or;
+          filter.$and = [{ $or: locationConditions }];
         }
       }
       
@@ -174,7 +180,7 @@ static async searchProfessionals(req, res) {
       const [providers, total] = await Promise.all([
         ServiceProvider.find(filter)
           .populate('user', 'fullName email phone')
-          .sort({ rating: -1, completedJobs: -1 })
+          .sort({ rating: -1, completedJobs: -1, verifiedAt: -1 })
           .skip(skip)
           .limit(parseInt(limit)),
         ServiceProvider.countDocuments(filter)
@@ -190,24 +196,26 @@ static async searchProfessionals(req, res) {
         companyName: provider.companyName || '',
         trade: provider.serviceType || 'General',
         serviceType: provider.serviceType || '',
-        // Get location from top-level fields first, fallback to serviceArea
-        city: provider.city || provider.serviceArea?.[0]?.city || '',
-        state: provider.state || provider.serviceArea?.[0]?.state || '',
+        // Get location from all possible fields
+        city: provider.city || provider.businessAddress?.city || provider.serviceArea?.[0]?.city || '',
+        state: provider.state || provider.businessAddress?.state || provider.serviceArea?.[0]?.state || '',
         location: [
-          provider.city || provider.serviceArea?.[0]?.city,
-          provider.state || provider.serviceArea?.[0]?.state
+          provider.city || provider.businessAddress?.city || provider.serviceArea?.[0]?.city,
+          provider.state || provider.businessAddress?.state || provider.serviceArea?.[0]?.state
         ].filter(Boolean).join(', ') || 'Location not specified',
         rating: provider.rating || 0,
         jobs: provider.completedJobs || 0,
         years: provider.yearsOfExperience || 0,
         status: provider.isAvailable ? 'Available now' : 'Currently Unavailable',
-        isVerified: provider.isVerified || false,
+        isVerified: provider.verificationStatus === 'approved',
+        verificationStatus: provider.verificationStatus,
         tagline: provider.tagline || '',
+        profilePicture: provider.selfiePhoto || null,
         isFavorited: false // Will be updated below
       }));
       
       // Mark favorites
-      if (req.user) {
+      if (req.user && results.length > 0) {
         const userFavorites = await Favorite.find({ 
           customer: req.user.id,
           professional: { $in: providers.map(p => p._id) }

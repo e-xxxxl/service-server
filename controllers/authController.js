@@ -4,6 +4,7 @@ const ServiceProvider = require('../models/ServiceProvider');
 const JWTService = require('../config/jwt');
 const crypto = require('crypto');
 const emailService = require('../services/emailService');
+const passport = require('../config/passport');
 
 class AuthController {
 
@@ -329,6 +330,42 @@ static async verifyToken(req, res) {
         success: false,
         message: 'Invalid token'
       });
+    }
+  }
+
+  
+  // Google OAuth Callback
+  static async googleCallback(req, res) {
+    try {
+      const user = req.user;
+      
+      if (!user) {
+        return res.redirect(`${process.env.CLIENT_URL}/login?error=google_failed`);
+      }
+
+      // Generate JWT token
+      const token = JWTService.generateToken(user);
+
+      // Populate provider profile if exists
+      let needsProfileSetup = false;
+      if (user.accountType === 'provider') {
+        const provider = await ServiceProvider.findOne({ user: user._id });
+        needsProfileSetup = !provider?.city || !provider?.state || provider?.serviceType === 'general';
+      }
+
+      // Redirect to frontend with token
+      const params = new URLSearchParams({
+        token,
+        accountType: user.accountType,
+        email: user.email,
+        fullName: user.fullName,
+        needsProfileSetup: needsProfileSetup ? 'true' : 'false'
+      });
+
+      res.redirect(`${process.env.CLIENT_URL}/auth/callback?${params.toString()}`);
+    } catch (error) {
+      console.error('Google callback error:', error);
+      res.redirect(`${process.env.CLIENT_URL}/login?error=server_error`);
     }
   }
   // controllers/authController.js - Add this method

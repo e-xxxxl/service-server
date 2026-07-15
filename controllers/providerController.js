@@ -5,8 +5,271 @@ const Conversation = require('../models/Conversation');
 const Notification = require('../models/Notification');
 const MessageFilter = require('../middleware/messageFilter');
 
+const { cloudinary } = require('../config/cloudinary');
+const fs = require('fs');
+
 class ProviderController {
+
+    
+  // Helper: Upload file to Cloudinary
+  static async uploadToCloudinary(file, folder) {
+    return new Promise((resolve, reject) => {
+      const uploadOptions = {
+        folder: `9jatradies/${folder}`,
+        resource_type: 'auto'
+      };
+
+      // Add specific transformations
+      if (folder === 'selfies') {
+        uploadOptions.transformation = [
+          { width: 500, height: 500, crop: 'fill', gravity: 'face' },
+          { quality: 'auto', fetch_format: 'auto' }
+        ];
+      }
+
+      cloudinary.uploader.upload(file.path, uploadOptions, (error, result) => {
+        // Delete temp file after upload
+        if (file.path) fs.unlinkSync(file.path);
+        
+        if (error) reject(error);
+        else resolve(result);
+      });
+    });
+  }
   
+   // POST /api/provider/setup-profile
+  static async setupProfile(req, res) {
+    try {
+      const userId = req.user.id;
+      const { serviceType, tagline, ninNumber, street, city, state, phone } = req.body;
+
+      // Validate required fields
+      const missingFields = [];
+      if (!serviceType?.trim()) missingFields.push('Service type');
+      if (!tagline?.trim()) missingFields.push('Tagline');
+      if (!ninNumber?.trim()) missingFields.push('NIN number');
+      if (!city?.trim()) missingFields.push('City');
+      if (!state?.trim()) missingFields.push('State');
+      if (!req.files?.ninDocument?.[0]) missingFields.push('NIN document');
+      if (!req.files?.selfiePhoto?.[0]) missingFields.push('Selfie photo');
+
+      if (missingFields.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Missing required fields: ${missingFields.join(', ')}`
+        });
+      }
+
+      // Upload NIN document to Cloudinary
+      const ninUpload = await ProviderController.uploadToCloudinary(
+        req.files.ninDocument[0], 
+        'nin-documents'
+      );
+
+      // Upload selfie to Cloudinary
+      const selfieUpload = await ProviderController.uploadToCloudinary(
+        req.files.selfiePhoto[0], 
+        'selfies'
+      );
+
+      console.log('Cloudinary uploads complete:', {
+        nin: ninUpload.secure_url,
+        selfie: selfieUpload.secure_url
+      });
+
+      const updateData = {
+        serviceType: serviceType.toLowerCase().trim(),
+        tagline: tagline.trim(),
+        'nin.number': ninNumber.trim(),
+        'nin.documentUrl': ninUpload.secure_url,
+        'nin.documentPublicId': ninUpload.public_id,
+        selfiePhoto: selfieUpload.secure_url,
+        selfiePublicId: selfieUpload.public_id,
+        city: city.trim(),
+        state: state.trim(),
+        'businessAddress.street': street?.trim() || '',
+        'businessAddress.city': city.trim(),
+        'businessAddress.state': state.trim(),
+        verificationStatus: 'submitted',
+        profileCompletionScore: 80,
+        verificationDocuments: [
+          { 
+            type: 'nin', 
+            url: ninUpload.secure_url,
+            publicId: ninUpload.public_id,
+            uploadedAt: new Date()
+          },
+          { 
+            type: 'selfie', 
+            url: selfieUpload.secure_url,
+            publicId: selfieUpload.public_id,
+            uploadedAt: new Date()
+          }
+        ]
+      };
+
+      const provider = await ServiceProvider.findOneAndUpdate(
+        { user: userId },
+        { $set: updateData },
+        { new: true }
+      );
+
+      // Update user phone
+      if (phone?.trim()) {
+        await User.findByIdAndUpdate(userId, { phone: phone.trim() });
+      }
+
+      // Create notification
+      await Notification.create({
+        user: userId,
+        text: '✅ Your profile has been submitted for verification. Our team will review it within 24-48 hours.',
+        kind: 'success'
+      });
+
+      res.json({
+        success: true,
+        message: 'Profile submitted for verification successfully!',
+        data: {
+          verificationStatus: provider.verificationStatus,
+          serviceType: provider.serviceType,
+          profileCompletion: provider.profileCompletionScore
+        }
+      });
+
+    } catch (error) {
+      console.error('Setup profile error:', error);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Failed to setup profile. Please try again.' 
+      });
+    }
+  }
+
+  // POST /api/provider/resubmit-verification
+  static async resubmitVerification(req, res) {
+    try {
+      const userId = req.user.id;
+      const provider = await ServiceProvider.findOne({ user: userId });
+
+      if (!provider) {
+        return res.status(404).json({ success: false, message: 'Provider not found' });
+      }
+
+      if (provider.verificationStatus !== 'rejected') {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Only rejected profiles can resubmit for verification' 
+        });
+      }
+
+      const updateData = {
+        verificationStatus: 'submitted',
+        rejectionReason: null,
+        $inc: { resubmissionCount: 1 }
+      };
+
+      // Delete old documents from Cloudinary if new ones are uploaded
+      if (req.files?.ninDocument?.[0]) {
+        // Delete old NIN document
+        if (provider.nin?.documentPublicId) {
+          await cloudinary.uploader.destroy(provider.nin.documentPublicId);
+        }
+        
+        const ninUpload = await ProviderController.uploadToCloudinary(
+          req.files.ninDocument[0], 
+          'nin-documents'
+        );
+        
+        updateData['nin.documentUrl'] = ninUpload.secure_url;
+        updateData['nin.documentPublicId'] = ninUpload.public_id;
+        updateData.verificationDocuments = provider.verificationDocuments.map(doc => 
+          doc.type === 'nin' 
+            ? { ...doc, url: ninUpload.secure_url, publicId: ninUpload.public_id, uploadedAt: new Date() }
+            : doc
+        );
+      }
+
+      if (req.files?.selfiePhoto?.[0]) {
+        // Delete old selfie
+        if (provider.selfiePublicId) {
+          await cloudinary.uploader.destroy(provider.selfiePublicId);
+        }
+        
+        const selfieUpload = await ProviderController.uploadToCloudinary(
+          req.files.selfiePhoto[0], 
+          'selfies'
+        );
+        
+        updateData.selfiePhoto = selfieUpload.secure_url;
+        updateData.selfiePublicId = selfieUpload.public_id;
+        updateData.verificationDocuments = provider.verificationDocuments.map(doc =>
+          doc.type === 'selfie'
+            ? { ...doc, url: selfieUpload.secure_url, publicId: selfieUpload.public_id, uploadedAt: new Date() }
+            : doc
+        );
+      }
+
+      await ServiceProvider.findOneAndUpdate(
+        { user: userId },
+        { $set: updateData }
+      );
+
+      await Notification.create({
+        user: userId,
+        text: '📋 Your verification documents have been resubmitted for review.',
+        kind: 'info'
+      });
+
+      res.json({ 
+        success: true, 
+        message: 'Documents resubmitted for verification successfully!' 
+      });
+
+    } catch (error) {
+      console.error('Resubmit error:', error);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Failed to resubmit documents. Please try again.' 
+      });
+    }
+  }
+
+  // POST /api/provider/upload-photo
+  static async uploadPhoto(req, res) {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ success: false, message: 'No file uploaded' });
+      }
+
+      const provider = await ServiceProvider.findOne({ user: req.user.id });
+      
+      // Delete old photo if exists
+      if (provider?.selfiePublicId) {
+        await cloudinary.uploader.destroy(provider.selfiePublicId);
+      }
+
+      const result = await ProviderController.uploadToCloudinary(req.file, 'selfies');
+
+      await ServiceProvider.findOneAndUpdate(
+        { user: req.user.id },
+        { 
+          $set: { 
+            selfiePhoto: result.secure_url,
+            selfiePublicId: result.public_id
+          } 
+        }
+      );
+
+      res.json({
+        success: true,
+        url: result.secure_url
+      });
+    } catch (error) {
+      console.error('Upload photo error:', error);
+      res.status(500).json({ success: false, message: 'Upload failed' });
+    }
+  }
+
   // GET /api/provider/dashboard
 // GET /api/provider/dashboard
 static async getDashboard(req, res) {
@@ -193,6 +456,11 @@ static async sendMessage(req, res) {
       res.json({ success: true });
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
   }
+
+
+  
 }
+
+
 
 module.exports = ProviderController;

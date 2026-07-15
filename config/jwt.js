@@ -1,13 +1,15 @@
 // config/jwt.js
 const jwt = require('jsonwebtoken');
 
+// config/jwt.js
 class JWTService {
   static generateToken(user) {
     const payload = {
-      id: user._id,        // Make sure this is the user's MongoDB _id
-      userId: user._id,    // Add both for compatibility
+      id: user._id || user.id,
+      userId: user._id || user.id,
       email: user.email,
-      accountType: user.accountType
+      accountType: user.accountType || 'customer', // Include accountType
+      role: user.role
     };
     
     console.log('Generating token for:', {
@@ -24,20 +26,13 @@ class JWTService {
   }
 
   static verifyToken(token) {
-    try {
-      const decoded = jwt.verify(
-        token, 
-        process.env.JWT_SECRET || 'your-secret-key'
-      );
-      console.log('Token decoded successfully:', {
-        id: decoded.id,
-        email: decoded.email
-      });
-      return decoded;
-    } catch (error) {
-      console.error('Token verification failed:', error.message);
-      throw error;
-    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    console.log('Token decoded successfully:', { 
+      id: decoded.id, 
+      email: decoded.email,
+      accountType: decoded.accountType 
+    });
+    return decoded;
   }
 }
 
