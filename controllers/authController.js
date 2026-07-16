@@ -292,47 +292,44 @@ static async verifyEmail(req, res) {
   }
 
  // controllers/authController.js - Update verifyToken method
+  // controllers/authController.js - Update verifyToken
 static async verifyToken(req, res) {
     try {
-      // Check if user is attached to request
       if (!req.user || !req.user.id) {
-        return res.status(401).json({
-          success: false,
-          message: 'User not authenticated'
+        return res.status(401).json({ success: false, message: 'User not authenticated' });
+      }
+
+      // If admin, return admin data
+      if (req.user.accountType === 'admin') {
+        return res.json({
+          success: true,
+          user: {
+            _id: req.user.id,
+            fullName: req.user.fullName,
+            email: req.user.email,
+            accountType: 'admin',
+            role: req.user.role
+          }
         });
       }
 
-      const user = await User.findById(req.user.id)
-        .populate('providerProfile');
-
+      // Regular user
+      const user = await User.findById(req.user.id).populate('providerProfile');
       if (!user) {
-        return res.status(404).json({
-          success: false,
-          message: 'User not found'
-        });
+        return res.status(404).json({ success: false, message: 'User not found' });
       }
 
       const userData = user.toJSON();
-      
-      // Include provider profile if exists
       if (user.providerProfile) {
         userData.providerProfile = user.providerProfile;
       }
 
-      res.json({
-        success: true,
-        user: userData
-      });
-      
+      res.json({ success: true, user: userData });
     } catch (error) {
       console.error('Token verification error:', error.message);
-      res.status(401).json({
-        success: false,
-        message: 'Invalid token'
-      });
+      res.status(401).json({ success: false, message: 'Invalid token' });
     }
   }
-
   
   // Google OAuth Callback
   static async googleCallback(req, res) {

@@ -305,12 +305,185 @@ const sendPasswordResetEmail = async (user, token) => {
   });
 };
 
+
+// src/services/emailService.js - Add these templates
+
+// -----------------------------------------------------------------------
+// Provider Approval Email
+// -----------------------------------------------------------------------
+
+const getProviderApprovalEmailTemplate = (user, provider) => {
+  const firstName = user.fullName?.split(' ')[0] || 'there';
+  const dashboardUrl = `${process.env.CLIENT_URL}/provider-dashboard`;
+
+  const body = `
+    ${eyebrow('Profile Approved 🎉')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      Congratulations, ${firstName}!
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      Great news! Your provider profile for <strong>${provider.companyName || 'your business'}</strong> has been verified and approved. Your profile is now visible to customers searching for <strong>${provider.serviceType || 'your services'}</strong> in ${provider.city}, ${provider.state}.
+    </p>
+
+    <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 16px; margin: 0 0 28px 0;">
+      <p style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #166534;">
+        ✅ What happens next:
+      </p>
+      <ul style="margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6; color: #15803d;">
+        <li style="margin-bottom: 4px;">Customers can now find you in search results</li>
+        <li style="margin-bottom: 4px;">You'll receive job requests and messages</li>
+        <li style="margin-bottom: 4px;">Keep your availability updated</li>
+        <li>Respond promptly to increase your rating</li>
+      </ul>
+    </div>
+
+    ${button(dashboardUrl, 'Go to Your Dashboard')}
+
+    <p style="margin: 28px 0 0 0; font-size: 13.5px; line-height: 1.6; color: ${MUTED};">
+      Need help getting started? Reply to this email or visit our <a href="${process.env.CLIENT_URL}/help" style="color: ${ACCENT_DARK}; text-decoration: none;">Help Center</a>.
+    </p>
+  `;
+
+  return emailShell('Your provider profile has been approved!', body);
+};
+
+// -----------------------------------------------------------------------
+// Provider Rejection Email
+// -----------------------------------------------------------------------
+
+const getProviderRejectionEmailTemplate = (user, provider, reason) => {
+  const firstName = user.fullName?.split(' ')[0] || 'there';
+  const resubmitUrl = `${process.env.CLIENT_URL}/provider-dashboard`;
+
+  const body = `
+    ${eyebrow('Profile Needs Updates')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      Action Required, ${firstName}
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      Thank you for submitting your provider profile for <strong>${provider.companyName || 'your business'}</strong>. After reviewing your documents, we need some updates before we can approve your profile.
+    </p>
+
+    <div style="background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 0 0 28px 0;">
+      <p style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #991b1b;">
+        ❌ Reason for rejection:
+      </p>
+      <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #dc2626;">
+        ${reason}
+      </p>
+    </div>
+
+    <div style="background-color: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 16px; margin: 0 0 28px 0;">
+      <p style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #9a3412;">
+        📋 Common fixes:
+      </p>
+      <ul style="margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6; color: #c2410c;">
+        <li style="margin-bottom: 4px;">Upload a clearer NIN document or photo</li>
+        <li style="margin-bottom: 4px;">Provide a clear, well-lit selfie showing your face</li>
+        <li style="margin-bottom: 4px;">Enter your correct NIN number</li>
+        <li>Update your business address and contact information</li>
+      </ul>
+    </div>
+
+    ${button(resubmitUrl, 'Update & Resubmit')}
+
+    <p style="margin: 28px 0 0 0; font-size: 13.5px; line-height: 1.6; color: ${MUTED};">
+      You can resubmit your verification documents anytime from your dashboard. If you have questions, reply to this email and our support team will help.
+    </p>
+  `;
+
+  return emailShell('Update required for your provider profile', body);
+};
+
+// -----------------------------------------------------------------------
+// New Provider Submitted (Admin Notification)
+// -----------------------------------------------------------------------
+
+const getNewProviderSubmissionEmailTemplate = (provider) => {
+  const adminUrl = `${process.env.CLIENT_URL}/admin/dashboard`;
+
+  const body = `
+    ${eyebrow('New Verification Request')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      New Provider Submitted
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      <strong>${provider.companyName || 'A new provider'}</strong> has submitted their profile for verification.
+    </p>
+
+    <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 0 0 28px 0;">
+      <p style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: ${INK};">Provider Details:</p>
+      <table style="font-size: 13px; line-height: 1.6; color: ${INK_SOFT};">
+        <tr><td style="padding: 2px 8px 2px 0; font-weight: 500;">Company:</td><td>${provider.companyName || 'N/A'}</td></tr>
+        <tr><td style="padding: 2px 8px 2px 0; font-weight: 500;">Service:</td><td>${provider.serviceType || 'N/A'}</td></tr>
+        <tr><td style="padding: 2px 8px 2px 0; font-weight: 500;">Location:</td><td>${provider.city || ''}, ${provider.state || ''}</td></tr>
+        <tr><td style="padding: 2px 8px 2px 0; font-weight: 500;">NIN:</td><td>${provider.nin?.number || 'N/A'}</td></tr>
+      </table>
+    </div>
+
+    ${button(adminUrl, 'Review Provider')}
+
+    <p style="margin: 28px 0 0 0; font-size: 13.5px; line-height: 1.6; color: ${MUTED};">
+      This provider is waiting for review. Please verify their documents at your earliest convenience.
+    </p>
+  `;
+
+  return emailShell('New provider submitted for verification', body);
+};
+
+// -----------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------
+
+const sendApprovalEmail = async (user, provider) => {
+  const html = getProviderApprovalEmailTemplate(user, provider);
+  return sendEmail({
+    to: user.email,
+    subject: '🎉 Your Provider Profile Has Been Approved!',
+    html
+  });
+};
+
+const sendRejectionEmail = async (user, provider, reason) => {
+  const html = getProviderRejectionEmailTemplate(user, provider, reason);
+  return sendEmail({
+    to: user.email,
+    subject: 'Action Required: Update Your Provider Profile',
+    html
+  });
+};
+
+const sendNewProviderSubmissionEmail = async (adminEmail, provider) => {
+  const html = getNewProviderSubmissionEmailTemplate(provider);
+  return sendEmail({
+    to: adminEmail,
+    subject: `New Verification: ${provider.companyName || 'Provider'} - ${provider.serviceType || 'Service'}`,
+    html
+  });
+};
+
 module.exports = {
   sendEmail,
   sendVerificationEmail,
   sendWelcomeEmail,
   sendPasswordResetEmail,
+  sendApprovalEmail,         // ✅ NEW
+  sendRejectionEmail,        // ✅ NEW
+  sendNewProviderSubmissionEmail, // ✅ NEW
   getVerificationEmailTemplate,
   getWelcomeEmailTemplate,
-  getResetPasswordEmailTemplate
+  getResetPasswordEmailTemplate,
+  getProviderApprovalEmailTemplate,
+  getProviderRejectionEmailTemplate,
+  getNewProviderSubmissionEmailTemplate
 };
+
+// module.exports = {
+//   sendEmail,
+//   sendVerificationEmail,
+//   sendWelcomeEmail,
+//   sendPasswordResetEmail,
+//   getVerificationEmailTemplate,
+//   getWelcomeEmailTemplate,
+//   getResetPasswordEmailTemplate
+// };

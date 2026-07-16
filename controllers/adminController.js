@@ -4,6 +4,8 @@ const User = require('../models/User');
 const ServiceProvider = require('../models/ServiceProvider');
 const Conversation = require('../models/Conversation');
 const JWTService = require('../config/jwt');
+// controllers/adminController.js - Add at the top
+const Notification = require('../models/Notification'); // ✅ Add this
 
 class AdminController {
   
@@ -52,7 +54,8 @@ static async login(req, res) {
   }
 
   // GET /api/admin/dashboard
-  static async getDashboard(req, res) {
+// controllers/adminController.js - Fix getDashboard
+static async getDashboard(req, res) {
     try {
       const [totalUsers, totalProviders, totalCustomers, totalConversations, recentProviders, recentUsers] = await Promise.all([
         User.countDocuments({ accountType: { $ne: 'admin' } }),
@@ -63,7 +66,10 @@ static async login(req, res) {
         User.find({ accountType: { $ne: 'admin' } }).sort({ createdAt: -1 }).limit(5)
       ]);
 
-      const pendingVerifications = await ServiceProvider.countDocuments({ isVerified: false });
+      // Use verificationStatus instead of isVerified
+      const pendingVerifications = await ServiceProvider.countDocuments({ 
+        verificationStatus: 'submitted' 
+      });
 
       res.json({
         success: true,
@@ -82,7 +88,8 @@ static async login(req, res) {
             fullName: p.user?.fullName,
             email: p.user?.email,
             serviceType: p.serviceType,
-            isVerified: p.isVerified,
+            verificationStatus: p.verificationStatus, // ✅ Use this instead of isVerified
+            isVisible: p.isVisible,
             city: p.city,
             state: p.state,
             createdAt: p.createdAt
@@ -101,7 +108,6 @@ static async login(req, res) {
       res.status(500).json({ success: false, message: error.message });
     }
   }
-
   // GET /api/admin/users
   static async getUsers(req, res) {
     try {
@@ -122,20 +128,43 @@ static async login(req, res) {
   }
 
   // GET /api/admin/providers
-  static async getProviders(req, res) {
+// controllers/adminController.js - Fix getProviders
+static async getProviders(req, res) {
     try {
-      const { page = 1, limit = 20, search, verified } = req.query;
+      const { page = 1, limit = 20, search, verificationStatus } = req.query;
       const filter = {};
-      if (search) filter.$or = [{ companyName: { $regex: search, $options: 'i' } }, { serviceType: { $regex: search, $options: 'i' } }];
-      if (verified === 'true') filter.isVerified = true;
-      if (verified === 'false') filter.isVerified = false;
+      
+      if (search) {
+        filter.$or = [
+          { companyName: { $regex: search, $options: 'i' } }, 
+          { serviceType: { $regex: search, $options: 'i' } }
+        ];
+      }
+      
+      if (verificationStatus && verificationStatus !== 'all') {
+        filter.verificationStatus = verificationStatus;
+      }
+
+      console.log('Provider filter:', filter);
 
       const [providers, total] = await Promise.all([
-        ServiceProvider.find(filter).sort({ createdAt: -1 }).skip((page-1)*limit).limit(parseInt(limit)).populate('user', 'fullName email phone'),
+        ServiceProvider.find(filter)
+          .sort({ createdAt: -1 })
+          .skip((parseInt(page)-1) * parseInt(limit))
+          .limit(parseInt(limit))
+          .populate('user', 'fullName email phone'),
         ServiceProvider.countDocuments(filter)
       ]);
 
-      res.json({ success: true, data: providers, pagination: { total, page: parseInt(page), pages: Math.ceil(total/limit) } });
+      res.json({ 
+        success: true, 
+        data: providers, 
+        pagination: { 
+          total, 
+          page: parseInt(page), 
+          pages: Math.ceil(total / parseInt(limit)) 
+        } 
+      });
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
     }
@@ -179,6 +208,7 @@ static async login(req, res) {
   // controllers/adminController.js - Add these methods
 
 // PATCH /api/admin/providers/:id/approve
+// controllers/adminController.js - Update approveProvider
 static async approveProvider(req, res) {
     try {
       const provider = await ServiceProvider.findByIdAndUpdate(
@@ -197,7 +227,7 @@ static async approveProvider(req, res) {
         return res.status(404).json({ success: false, message: 'Provider not found' });
       }
 
-      // Create notification for provider
+      // Create notification
       await Notification.create({
         user: provider.user._id,
         text: '🎉 Congratulations! Your profile has been approved and is now visible to customers.',
@@ -205,9 +235,16 @@ static async approveProvider(req, res) {
       });
 
       // Send approval email
-      // await emailService.sendApprovalEmail(provider.user);
+      try {
+        const emailService = require('../services/emailService');
+        await emailService.sendApprovalEmail(provider.user, provider);
+        console.log('Approval email sent to:', provider.user.email);
+      } catch (emailError) {
+        console.error('Failed to send approval email:', emailError);
+        // Don't fail the request if email fails
+      }
 
-      res.json({ success: true, message: 'Provider approved', data: provider });
+      res.json({ success: true, message: 'Provider approved and notified', data: provider });
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
     }
@@ -239,17 +276,24 @@ static async approveProvider(req, res) {
         return res.status(404).json({ success: false, message: 'Provider not found' });
       }
 
-      // Create notification for provider
+      // Create notification
       await Notification.create({
         user: provider.user._id,
-        text: `Your profile was not approved. Reason: ${reason}. You can update your information and resubmit.`,
+        text: `❌ Your profile was not approved. Reason: ${reason}. You can update and resubmit.`,
         kind: 'action'
       });
 
       // Send rejection email
-      // await emailService.sendRejectionEmail(provider.user, reason);
+      try {
+        const emailService = require('../services/emailService');
+        await emailService.sendRejectionEmail(provider.user, provider, reason);
+        console.log('Rejection email sent to:', provider.user.email);
+      } catch (emailError) {
+        console.error('Failed to send rejection email:', emailError);
+        // Don't fail the request if email fails
+      }
 
-      res.json({ success: true, message: 'Provider rejected', data: provider });
+      res.json({ success: true, message: 'Provider rejected and notified', data: provider });
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
     }

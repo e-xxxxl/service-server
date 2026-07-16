@@ -5,7 +5,7 @@ const Conversation = require('../models/Conversation');
 const Notification = require('../models/Notification');
 const MessageFilter = require('../middleware/messageFilter');
 
-const { cloudinary } = require('../config/cloudinary');
+const cloudinary = require('../config/cloudinary'); // ✅ Now works
 const fs = require('fs');
 
 class ProviderController {
@@ -38,7 +38,8 @@ class ProviderController {
   }
   
    // POST /api/provider/setup-profile
-  static async setupProfile(req, res) {
+// controllers/providerController.js - Updated setupProfile
+static async setupProfile(req, res) {
     try {
       const userId = req.user.id;
       const { serviceType, tagline, ninNumber, street, city, state, phone } = req.body;
@@ -108,23 +109,44 @@ class ProviderController {
         ]
       };
 
+      // Populate user data for email
       const provider = await ServiceProvider.findOneAndUpdate(
         { user: userId },
         { $set: updateData },
         { new: true }
-      );
+      ).populate('user', 'email fullName');
 
       // Update user phone
       if (phone?.trim()) {
         await User.findByIdAndUpdate(userId, { phone: phone.trim() });
       }
 
-      // Create notification
+      // Create notification for provider
       await Notification.create({
         user: userId,
         text: '✅ Your profile has been submitted for verification. Our team will review it within 24-48 hours.',
         kind: 'success'
       });
+
+      // Send email notification to admin
+      try {
+        const emailService = require('../services/emailService');
+        const adminEmail = process.env.ADMIN_EMAIL || 'admin@9jatradiespages.com';
+        
+        await emailService.sendNewProviderSubmissionEmail(adminEmail, {
+          companyName: provider.companyName || 'New Provider',
+          serviceType: provider.serviceType || 'Not specified',
+          city: provider.city || 'Not specified',
+          state: provider.state || 'Not specified',
+          nin: provider.nin,
+          _id: provider._id
+        });
+        
+        console.log('📧 Admin notification sent to:', adminEmail);
+      } catch (emailError) {
+        console.error('⚠️ Failed to send admin notification email:', emailError.message);
+        // Don't fail the request if email fails - the provider already submitted successfully
+      }
 
       res.json({
         success: true,
@@ -146,10 +168,11 @@ class ProviderController {
   }
 
   // POST /api/provider/resubmit-verification
-  static async resubmitVerification(req, res) {
+// controllers/providerController.js - Updated resubmitVerification
+static async resubmitVerification(req, res) {
     try {
       const userId = req.user.id;
-      const provider = await ServiceProvider.findOne({ user: userId });
+      const provider = await ServiceProvider.findOne({ user: userId }).populate('user', 'email fullName');
 
       if (!provider) {
         return res.status(404).json({ success: false, message: 'Provider not found' });
@@ -170,7 +193,6 @@ class ProviderController {
 
       // Delete old documents from Cloudinary if new ones are uploaded
       if (req.files?.ninDocument?.[0]) {
-        // Delete old NIN document
         if (provider.nin?.documentPublicId) {
           await cloudinary.uploader.destroy(provider.nin.documentPublicId);
         }
@@ -182,15 +204,9 @@ class ProviderController {
         
         updateData['nin.documentUrl'] = ninUpload.secure_url;
         updateData['nin.documentPublicId'] = ninUpload.public_id;
-        updateData.verificationDocuments = provider.verificationDocuments.map(doc => 
-          doc.type === 'nin' 
-            ? { ...doc, url: ninUpload.secure_url, publicId: ninUpload.public_id, uploadedAt: new Date() }
-            : doc
-        );
       }
 
       if (req.files?.selfiePhoto?.[0]) {
-        // Delete old selfie
         if (provider.selfiePublicId) {
           await cloudinary.uploader.destroy(provider.selfiePublicId);
         }
@@ -202,11 +218,6 @@ class ProviderController {
         
         updateData.selfiePhoto = selfieUpload.secure_url;
         updateData.selfiePublicId = selfieUpload.public_id;
-        updateData.verificationDocuments = provider.verificationDocuments.map(doc =>
-          doc.type === 'selfie'
-            ? { ...doc, url: selfieUpload.secure_url, publicId: selfieUpload.public_id, uploadedAt: new Date() }
-            : doc
-        );
       }
 
       await ServiceProvider.findOneAndUpdate(
@@ -219,6 +230,25 @@ class ProviderController {
         text: '📋 Your verification documents have been resubmitted for review.',
         kind: 'info'
       });
+
+      // Send email notification to admin about resubmission
+      try {
+        const emailService = require('../services/emailService');
+        const adminEmail = process.env.ADMIN_EMAIL || 'admin@9jatradiespages.com';
+        
+        await emailService.sendNewProviderSubmissionEmail(adminEmail, {
+          companyName: provider.companyName || 'Provider',
+          serviceType: provider.serviceType || 'Not specified',
+          city: provider.city || 'Not specified',
+          state: provider.state || 'Not specified',
+          nin: provider.nin,
+          _id: provider._id
+        });
+        
+        console.log('📧 Admin resubmission notification sent to:', adminEmail);
+      } catch (emailError) {
+        console.error('⚠️ Failed to send admin notification:', emailError.message);
+      }
 
       res.json({ 
         success: true, 

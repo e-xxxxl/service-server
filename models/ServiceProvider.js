@@ -1,4 +1,4 @@
-// models/ServiceProvider.js - Add verification fields
+// models/ServiceProvider.js - FIXED
 const mongoose = require('mongoose');
 
 const serviceProviderSchema = new mongoose.Schema({
@@ -10,18 +10,19 @@ const serviceProviderSchema = new mongoose.Schema({
   },
   companyName: {
     type: String,
-    required: [true, 'Company name is required'],
-    trim: true
+    trim: true,
+    default: ''
   },
   serviceType: {
     type: String,
-    required: [true, 'Service type is required'],
     lowercase: true,
-    trim: true
+    trim: true,
+    default: ''
   },
   tagline: {
     type: String,
-    maxlength: 200
+    maxlength: 200,
+    default: ''
   },
   
   // Verification Status
@@ -39,14 +40,14 @@ const serviceProviderSchema = new mongoose.Schema({
   // NIN Details
   nin: {
     number: { type: String, trim: true },
-    documentUrl: { type: String }, // Uploaded NIN document
+    documentUrl: { type: String },
+    documentPublicId: { type: String },
     verified: { type: Boolean, default: false }
   },
   
   // Personal Photo
-  selfiePhoto: {
-    type: String // URL to uploaded selfie
-  },
+  selfiePhoto: { type: String },
+  selfiePublicId: { type: String },
   
   // Verification Documents
   verificationDocuments: [{
@@ -55,6 +56,7 @@ const serviceProviderSchema = new mongoose.Schema({
       enum: ['nin', 'selfie', 'business_registration', 'trade_certificate', 'utility_bill', 'other']
     },
     url: String,
+    publicId: String,
     uploadedAt: { type: Date, default: Date.now },
     verified: { type: Boolean, default: false }
   }],
@@ -84,12 +86,14 @@ const serviceProviderSchema = new mongoose.Schema({
   servicesOffered: [{ name: String, description: String }],
   yearsOfExperience: { type: Number, default: 0 },
   teamSize: { type: Number, default: 1 },
-  phone: String,
   rating: { type: Number, default: 0, min: 0, max: 5 },
   totalReviews: { type: Number, default: 0 },
   completedJobs: { type: Number, default: 0 },
   isAvailable: { type: Boolean, default: true },
   profileCompletionScore: { type: Number, default: 0 },
+  
+  // Last active
+  lastActive: { type: Date, default: Date.now }
   
 }, { timestamps: true });
 
@@ -97,12 +101,13 @@ const serviceProviderSchema = new mongoose.Schema({
 serviceProviderSchema.pre('save', function(next) {
   const requiredFields = [
     { field: 'serviceType', weight: 20 },
-    { field: 'tagline', weight: 15 },
+    { field: 'tagline', weight: 10 },
     { field: 'nin.number', weight: 15 },
     { field: 'nin.documentUrl', weight: 15 },
     { field: 'selfiePhoto', weight: 15 },
     { field: 'city', weight: 10 },
-    { field: 'state', weight: 10 }
+    { field: 'state', weight: 10 },
+    { field: 'companyName', weight: 5 }
   ];
   
   let score = 0;
@@ -112,7 +117,12 @@ serviceProviderSchema.pre('save', function(next) {
   }
   
   this.profileCompletionScore = Math.min(score, 100);
-  // next();
+  // next(); // ✅ UNCOMMENTED - This is critical!
 });
+
+// Indexes for search
+serviceProviderSchema.index({ verificationStatus: 1, isVisible: 1 });
+serviceProviderSchema.index({ serviceType: 1, city: 1, state: 1 });
+serviceProviderSchema.index({ lastActive: -1 });
 
 module.exports = mongoose.model('ServiceProvider', serviceProviderSchema);
