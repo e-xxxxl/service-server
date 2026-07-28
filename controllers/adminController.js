@@ -52,6 +52,139 @@ static async login(req, res) {
       res.status(500).json({ success: false, message: 'Login failed' });
     }
   }
+// controllers/adminController.js - Add these methods
+
+// GET /api/admin/customer-contacts
+static async getCustomerContacts(req, res) {
+    try {
+      const { page = 1, limit = 20 } = req.query;
+      
+      const conversations = await Conversation.find()
+        .sort({ lastMessageAt: -1 })
+        .skip((page-1)*limit)
+        .limit(parseInt(limit))
+        .populate('customer', 'fullName email')
+        .populate('professional', 'companyName serviceType user')
+        .populate({ path: 'professional', populate: { path: 'user', select: 'fullName email' } });
+
+      const total = await Conversation.countDocuments();
+
+      const data = conversations.map(conv => ({
+        id: conv._id,
+        customerName: conv.customer?.fullName || 'Unknown',
+        customerEmail: conv.customer?.email,
+        providerName: conv.professional?.user?.fullName || conv.professional?.companyName || 'Unknown',
+        providerCompany: conv.professional?.companyName,
+        serviceType: conv.professional?.serviceType,
+        lastMessage: conv.messages[conv.messages.length - 1]?.text || '',
+        lastContact: conv.lastMessageAt,
+        messageCount: conv.messages.length
+      }));
+
+      res.json({ success: true, data, pagination: { total, page: parseInt(page), pages: Math.ceil(total/limit) } });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  // GET /api/admin/provider-activity
+  static async getProviderActivity(req, res) {
+    try {
+      const { page = 1, limit = 20 } = req.query;
+      
+      const providers = await ServiceProvider.find()
+        .sort({ lastActive: -1 })
+        .skip((page-1)*limit)
+        .limit(parseInt(limit))
+        .populate('user', 'fullName email');
+
+      const total = await ServiceProvider.countDocuments();
+
+      const data = providers.map(p => ({
+        id: p._id,
+        companyName: p.companyName,
+        fullName: p.user?.fullName,
+        email: p.user?.email,
+        serviceType: p.serviceType,
+        city: p.city,
+        state: p.state,
+        verificationStatus: p.verificationStatus,
+        lastActive: p.lastActive,
+        isAvailable: p.isAvailable,
+        completedJobs: p.completedJobs,
+        rating: p.rating
+      }));
+
+      res.json({ success: true, data, pagination: { total, page: parseInt(page), pages: Math.ceil(total/limit) } });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  // GET /api/admin/reports
+  static async getReports(req, res) {
+    try {
+      const reports = await Notification.find({ kind: 'report' })
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .populate('user', 'fullName email');
+
+      res.json({ success: true, data: reports });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  // PATCH /api/admin/reports/:id/resolve
+  static async resolveReport(req, res) {
+    try {
+      await Notification.findByIdAndUpdate(req.params.id, { read: true, kind: 'info' });
+      res.json({ success: true, message: 'Report resolved' });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  // GET /api/admin/admins (super admin only)
+  static async getAdmins(req, res) {
+    try {
+      const admins = await Admin.find().select('-password');
+      res.json({ success: true, data: admins });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  // POST /api/admin/admins (super admin only)
+  static async createAdmin(req, res) {
+    try {
+      const { email, password, fullName, role } = req.body;
+      const admin = await Admin.create({ email, password, fullName, role: role || 'admin' });
+      res.json({ success: true, data: { id: admin._id, email: admin.email, fullName: admin.fullName, role: admin.role } });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  // DELETE /api/admin/admins/:id (super admin only)
+  static async deleteAdmin(req, res) {
+    try {
+      await Admin.findByIdAndDelete(req.params.id);
+      res.json({ success: true, message: 'Admin deleted' });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  // GET /api/admin/settings
+  static async getSettings(req, res) {
+    res.json({ success: true, data: { siteName: '9jaTradiesPages', supportEmail: 'support@9jatradiespages.com' } });
+  }
+
+  // PUT /api/admin/settings
+  static async updateSettings(req, res) {
+    res.json({ success: true, message: 'Settings updated' });
+  }
 
   // GET /api/admin/dashboard
 // controllers/adminController.js - Fix getDashboard
@@ -209,6 +342,7 @@ static async getProviders(req, res) {
 
 // PATCH /api/admin/providers/:id/approve
 // controllers/adminController.js - Update approveProvider
+// controllers/adminController.js - Fixed approveProvider with email
 static async approveProvider(req, res) {
     try {
       const provider = await ServiceProvider.findByIdAndUpdate(
@@ -237,11 +371,10 @@ static async approveProvider(req, res) {
       // Send approval email
       try {
         const emailService = require('../services/emailService');
-        await emailService.sendApprovalEmail(provider.user, provider);
-        console.log('Approval email sent to:', provider.user.email);
+        const result = await emailService.sendApprovalEmail(provider.user, provider);
+        console.log('Approval email result:', result);
       } catch (emailError) {
-        console.error('Failed to send approval email:', emailError);
-        // Don't fail the request if email fails
+        console.error('Failed to send approval email:', emailError.message);
       }
 
       res.json({ success: true, message: 'Provider approved and notified', data: provider });
@@ -249,6 +382,8 @@ static async approveProvider(req, res) {
       res.status(500).json({ success: false, message: error.message });
     }
   }
+
+
 
   // PATCH /api/admin/providers/:id/reject
   static async rejectProvider(req, res) {

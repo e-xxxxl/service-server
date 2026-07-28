@@ -302,41 +302,45 @@ static async resubmitVerification(req, res) {
 
   // GET /api/provider/dashboard
 // GET /api/provider/dashboard
+// controllers/providerController.js - Updated getDashboard
 static async getDashboard(req, res) {
-  try {
-    const userId = req.user.id;
-    const provider = await ServiceProvider.findOne({ user: userId });
-    if (!provider) return res.status(404).json({ success: false, message: 'Provider profile not found' });
+    try {
+      const userId = req.user.id;
+      const provider = await ServiceProvider.findOne({ user: userId });
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider profile not found' });
 
-    const user = await User.findById(userId);
-    const recentConversations = await Conversation.find({ professional: provider._id }) // ✅ fixed
-      .sort({ lastMessageAt: -1 }).limit(5).populate('customer', 'fullName');
-    const notifications = await Notification.find({ user: userId }).sort({ createdAt: -1 }).limit(10);
+      const user = await User.findById(userId);
+      const recentConversations = await Conversation.find({ professional: provider._id })
+        .sort({ lastMessageAt: -1 }).limit(5).populate('customer', 'fullName');
+      const notifications = await Notification.find({ user: userId }).sort({ createdAt: -1 }).limit(10);
 
-    res.json({
-      success: true,
-      data: {
-        providerName: user.fullName?.split(' ')[0] || 'Pro',
-        companyName: provider.companyName,
-        profileCompletion: provider.profileCompletionScore || 0,
-        activeJobs: [],
-        recentMessages: recentConversations.map(conv => ({
-          id: conv._id,
-          customerId: conv.customer?._id,
-          customerName: conv.customer?.fullName || 'Unknown',
-          preview: conv.messages[conv.messages.length - 1]?.text || '',
-          time: conv.lastMessageAt,
-          unread: conv.providerUnread || false
-        })),
-        notifications: notifications.map(n => ({ id: n._id, text: n.text, time: n.createdAt, kind: n.kind, read: n.read })),
-        stats: { activeJobs: 0, completedJobs: provider.completedJobs || 0, rating: provider.rating || 0, responseRate: provider.responseRate || 0 }
-      }
-    });
-  } catch (error) {
-    console.error('Provider dashboard error:', error);
-    res.status(500).json({ success: false, message: 'Failed to load provider dashboard' });
+      res.json({
+        success: true,
+        data: {
+          providerName: user.fullName?.split(' ')[0] || 'Pro',
+          companyName: provider.companyName,
+          profileCompletion: provider.profileCompletionScore || 0,
+          verificationStatus: provider.verificationStatus,
+          rejectionReason: provider.rejectionReason,
+          isVisible: provider.isVisible,
+          activeJobs: [],
+          recentMessages: recentConversations.map(conv => ({
+            id: conv._id,
+            customerId: conv.customer?._id,
+            customerName: conv.customer?.fullName || 'Unknown',
+            preview: conv.messages[conv.messages.length - 1]?.text || '',
+            time: conv.lastMessageAt,
+            unread: conv.providerUnread || false
+          })),
+          notifications: notifications.map(n => ({ id: n._id, text: n.text, time: n.createdAt, kind: n.kind, read: n.read })),
+          stats: { activeJobs: 0, completedJobs: provider.completedJobs || 0, rating: provider.rating || 0, responseRate: provider.responseRate || 0 }
+        }
+      });
+    } catch (error) {
+      console.error('Provider dashboard error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load provider dashboard' });
+    }
   }
-}
 
 // GET /api/provider/messages
 static async getMessages(req, res) {

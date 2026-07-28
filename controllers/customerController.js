@@ -249,6 +249,25 @@ static async searchProfessionals(req, res) {
     }
   }
 
+  // controllers/customerController.js - Add submitReport
+static async submitReport(req, res) {
+    try {
+      const { subject, message, providerId } = req.body;
+      const userId = req.user.id;
+
+      await Notification.create({
+        user: userId,
+        text: `Report submitted: ${subject}`,
+        kind: 'report',
+        metadata: { message, providerId, customerId: userId }
+      });
+
+      res.json({ success: true, message: 'Report submitted successfully' });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Failed to submit report' });
+    }
+  }
+
   // POST /api/customer/favorites/:professionalId
   static async toggleFavorite(req, res) {
     try {

@@ -24,5 +24,7 @@ router.post('/messages/:professionalId', CustomerController.sendMessage);
 // Notifications
 router.get('/notifications', CustomerController.getNotifications);
 router.patch('/notifications/:id/read', CustomerController.markNotificationRead);
+// routes/customerRoutes.js - Add report route
+router.post('/report', CustomerController.submitReport);
 
 module.exports = router;
