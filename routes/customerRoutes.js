@@ -20,6 +20,8 @@ router.post('/favorites/:professionalId', CustomerController.toggleFavorite);
 router.get('/messages', CustomerController.getMessages);
 router.get('/messages/:conversationId', CustomerController.getConversation);
 router.post('/messages/:professionalId', CustomerController.sendMessage);
+// routes/customerRoutes.js - Add this route
+router.get('/provider/:id', CustomerController.getProviderProfile);
 
 // Notifications
 router.get('/notifications', CustomerController.getNotifications);

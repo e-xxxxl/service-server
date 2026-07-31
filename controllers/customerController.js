@@ -128,27 +128,22 @@ const recentPros = recentConvos
 // controllers/customerController.js - Update searchProfessionals
 // controllers/customerController.js - Update searchProfessionals
 // controllers/customerController.js - Complete searchProfessionals
+// controllers/customerController.js - Update searchProfessionals
 static async searchProfessionals(req, res) {
     try {
       const { category, state, city, page = 1, limit = 20 } = req.query;
       
-      console.log('Search request:', { category, state, city });
-      
-      // Only show visible and approved providers to customers
       const filter = { 
         isAvailable: true,
         isVisible: true,
         verificationStatus: 'approved'
       };
       
-      // Add category filter
       if (category && category.trim()) {
         filter.serviceType = { $regex: category.trim(), $options: 'i' };
       }
       
-      // Build location filter
       const locationConditions = [];
-      
       if (state && state.trim()) {
         locationConditions.push(
           { state: { $regex: state.trim(), $options: 'i' } },
@@ -156,7 +151,6 @@ static async searchProfessionals(req, res) {
           { 'businessAddress.state': { $regex: state.trim(), $options: 'i' } }
         );
       }
-      
       if (city && city.trim()) {
         locationConditions.push(
           { city: { $regex: city.trim(), $options: 'i' } },
@@ -164,16 +158,10 @@ static async searchProfessionals(req, res) {
           { 'businessAddress.city': { $regex: city.trim(), $options: 'i' } }
         );
       }
-      
       if (locationConditions.length > 0) {
-        if (filter.$and) {
-          filter.$and.push({ $or: locationConditions });
-        } else {
-          filter.$and = [{ $or: locationConditions }];
-        }
+        if (filter.$and) filter.$and.push({ $or: locationConditions });
+        else filter.$and = [{ $or: locationConditions }];
       }
-      
-      console.log('Search filter:', JSON.stringify(filter, null, 2));
       
       const skip = (parseInt(page) - 1) * parseInt(limit);
       
@@ -181,14 +169,21 @@ static async searchProfessionals(req, res) {
         ServiceProvider.find(filter)
           .populate('user', 'fullName email phone')
           .sort({ rating: -1, completedJobs: -1, verifiedAt: -1 })
-          .skip(skip)
-          .limit(parseInt(limit)),
+          .skip(skip).limit(parseInt(limit)),
         ServiceProvider.countDocuments(filter)
       ]);
       
-      console.log(`Found ${providers.length} providers out of ${total} total`);
+      // Get favorites for current user
+      let favoriteIds = new Set();
+      if (req.user) {
+        const userFavorites = await Favorite.find({ 
+          customer: req.user.id,
+          professional: { $in: providers.map(p => p._id) }
+        }).select('professional');
+        favoriteIds = new Set(userFavorites.map(f => f.professional.toString()));
+      }
       
-      // Format results
+      // ✅ Enhanced results with more details
       const results = providers.map(provider => ({
         id: provider._id.toString(),
         fullName: provider.user?.fullName || provider.companyName || 'Unknown',
@@ -196,13 +191,9 @@ static async searchProfessionals(req, res) {
         companyName: provider.companyName || '',
         trade: provider.serviceType || 'General',
         serviceType: provider.serviceType || '',
-        // Get location from all possible fields
         city: provider.city || provider.businessAddress?.city || provider.serviceArea?.[0]?.city || '',
         state: provider.state || provider.businessAddress?.state || provider.serviceArea?.[0]?.state || '',
-        location: [
-          provider.city || provider.businessAddress?.city || provider.serviceArea?.[0]?.city,
-          provider.state || provider.businessAddress?.state || provider.serviceArea?.[0]?.state
-        ].filter(Boolean).join(', ') || 'Location not specified',
+        location: [provider.city || provider.businessAddress?.city, provider.state || provider.businessAddress?.state].filter(Boolean).join(', ') || 'Location not specified',
         rating: provider.rating || 0,
         jobs: provider.completedJobs || 0,
         years: provider.yearsOfExperience || 0,
@@ -210,45 +201,85 @@ static async searchProfessionals(req, res) {
         isVerified: provider.verificationStatus === 'approved',
         verificationStatus: provider.verificationStatus,
         tagline: provider.tagline || '',
+        // ✅ Profile photo from selfie
         profilePicture: provider.selfiePhoto || null,
-        isFavorited: false // Will be updated below
+        // ✅ Additional profile details
+        businessDescription: provider.businessDescription || '',
+        servicesOffered: provider.servicesOffered || [],
+        teamSize: provider.teamSize || 1,
+        completedJobs: provider.completedJobs || 0,
+        isFavorited: favoriteIds.has(provider._id.toString()),
+        phone: provider.user?.phone || '',
+        email: provider.user?.email || '',
+        lastActive: provider.lastActive || null
       }));
-      
-      // Mark favorites
-      if (req.user && results.length > 0) {
-        const userFavorites = await Favorite.find({ 
-          customer: req.user.id,
-          professional: { $in: providers.map(p => p._id) }
-        }).select('professional');
-        
-        const favoriteIds = new Set(userFavorites.map(f => f.professional.toString()));
-        
-        results.forEach(result => {
-          result.isFavorited = favoriteIds.has(result.id);
-        });
-      }
       
       res.json({
         success: true,
         data: results,
-        pagination: {
-          total,
-          page: parseInt(page),
-          pages: Math.ceil(total / parseInt(limit)),
-          limit: parseInt(limit)
-        }
+        pagination: { total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)), limit: parseInt(limit) }
       });
-      
     } catch (error) {
       console.error('Search error:', error);
-      res.status(500).json({ 
-        success: false, 
-        message: 'Search failed',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
+      res.status(500).json({ success: false, message: 'Search failed' });
     }
   }
 
+  // controllers/customerController.js - Add this method
+static async getProviderProfile(req, res) {
+    try {
+      const provider = await ServiceProvider.findById(req.params.id)
+        .populate('user', 'fullName email phone');
+      
+      if (!provider) {
+        return res.status(404).json({ success: false, message: 'Provider not found' });
+      }
+      
+      // Check if favorited by current user
+      let isFavorited = false;
+      if (req.user) {
+        const fav = await Favorite.findOne({ 
+          customer: req.user.id, 
+          professional: provider._id 
+        });
+        isFavorited = !!fav;
+      }
+      
+      res.json({
+        success: true,
+        data: {
+          id: provider._id.toString(),
+          fullName: provider.user?.fullName || provider.companyName,
+          companyName: provider.companyName || '',
+          trade: provider.serviceType || 'General',
+          serviceType: provider.serviceType || '',
+          tagline: provider.tagline || '',
+          businessDescription: provider.businessDescription || '',
+          city: provider.city || '',
+          state: provider.state || '',
+          location: [provider.city, provider.state].filter(Boolean).join(', '),
+          rating: provider.rating || 0,
+          totalReviews: provider.totalReviews || 0,
+          completedJobs: provider.completedJobs || 0,
+          yearsOfExperience: provider.yearsOfExperience || 0,
+          teamSize: provider.teamSize || 1,
+          status: provider.isAvailable ? 'Available now' : 'Currently Unavailable',
+          isVerified: provider.verificationStatus === 'approved',
+          profilePicture: provider.selfiePhoto || null,
+          servicesOffered: provider.servicesOffered || [],
+          businessAddress: provider.businessAddress || {},
+          isAvailable: provider.isAvailable,
+          lastActive: provider.lastActive || null,
+          isFavorited,
+          phone: provider.user?.phone || '',
+          email: provider.user?.email || ''
+        }
+      });
+    } catch (error) {
+      console.error('Get provider profile error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load provider profile' });
+    }
+  }
   // controllers/customerController.js - Add submitReport
 static async submitReport(req, res) {
     try {
