@@ -22,13 +22,13 @@ router.use(authorize('provider'));
 
 // Dashboard
 router.get('/dashboard', ProviderController.getDashboard);
-
 // Profile
 router.put('/profile', ProviderController.updateProfile);
 router.put('/profile/basic', ProviderController.updateBasicInfo);
 router.put('/profile/business', ProviderController.updateBusinessInfo);
 router.put('/profile/social', ProviderController.updateSocialLinks);
 
+router.post('/send-quote/:customerId', ProviderController.sendQuote);
 // Profile Setup with Cloudinary uploads
 router.post('/setup-profile',
   uploadProfileSetup.fields([

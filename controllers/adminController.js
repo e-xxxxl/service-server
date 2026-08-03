@@ -1,219 +1,74 @@
-// controllers/adminController.js
+// controllers/adminController.js - COMPLETE FIXED VERSION
 const Admin = require('../models/Admin');
 const User = require('../models/User');
 const ServiceProvider = require('../models/ServiceProvider');
 const Conversation = require('../models/Conversation');
+const Notification = require('../models/Notification');
 const JWTService = require('../config/jwt');
-// controllers/adminController.js - Add at the top
-const Notification = require('../models/Notification'); // ✅ Add this
 
 class AdminController {
-  
- // controllers/adminController.js - Update login
-static async login(req, res) {
+
+  static async login(req, res) {
     try {
       const { email, password } = req.body;
       const admin = await Admin.findOne({ email: email.toLowerCase() }).select('+password');
-      
       if (!admin || !(await admin.comparePassword(password))) {
         return res.status(401).json({ success: false, message: 'Invalid credentials' });
       }
-
-      if (!admin.isActive) {
-        return res.status(403).json({ success: false, message: 'Account deactivated' });
-      }
-
-      // Update last login
+      if (!admin.isActive) return res.status(403).json({ success: false, message: 'Account deactivated' });
       admin.lastLogin = new Date();
       await admin.save();
-
-      // Generate token WITH accountType: 'admin'
-      const token = JWTService.generateToken({
-        _id: admin._id,
-        id: admin._id,
-        email: admin.email,
-        accountType: 'admin',  // This is important!
-        fullName: admin.fullName,
-        role: admin.role
-      });
-
-      res.json({
-        success: true,
-        token,
-        admin: {
-          id: admin._id,
-          fullName: admin.fullName,
-          email: admin.email,
-          role: admin.role
-        }
-      });
-    } catch (error) {
-      console.error('Admin login error:', error);
-      res.status(500).json({ success: false, message: 'Login failed' });
-    }
-  }
-// controllers/adminController.js - Add these methods
-
-// GET /api/admin/customer-contacts
-static async getCustomerContacts(req, res) {
-    try {
-      const { page = 1, limit = 20 } = req.query;
-      
-      const conversations = await Conversation.find()
-        .sort({ lastMessageAt: -1 })
-        .skip((page-1)*limit)
-        .limit(parseInt(limit))
-        .populate('customer', 'fullName email')
-        .populate('professional', 'companyName serviceType user')
-        .populate({ path: 'professional', populate: { path: 'user', select: 'fullName email' } });
-
-      const total = await Conversation.countDocuments();
-
-      const data = conversations.map(conv => ({
-        id: conv._id,
-        customerName: conv.customer?.fullName || 'Unknown',
-        customerEmail: conv.customer?.email,
-        providerName: conv.professional?.user?.fullName || conv.professional?.companyName || 'Unknown',
-        providerCompany: conv.professional?.companyName,
-        serviceType: conv.professional?.serviceType,
-        lastMessage: conv.messages[conv.messages.length - 1]?.text || '',
-        lastContact: conv.lastMessageAt,
-        messageCount: conv.messages.length
-      }));
-
-      res.json({ success: true, data, pagination: { total, page: parseInt(page), pages: Math.ceil(total/limit) } });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
-    }
+      const token = JWTService.generateToken({ _id: admin._id, id: admin._id, email: admin.email, accountType: 'admin', fullName: admin.fullName, role: admin.role });
+      res.json({ success: true, token, admin: { id: admin._id, fullName: admin.fullName, email: admin.email, role: admin.role } });
+    } catch (error) { res.status(500).json({ success: false, message: 'Login failed' }); }
   }
 
-  // GET /api/admin/provider-activity
-  static async getProviderActivity(req, res) {
-    try {
-      const { page = 1, limit = 20 } = req.query;
-      
-      const providers = await ServiceProvider.find()
-        .sort({ lastActive: -1 })
-        .skip((page-1)*limit)
-        .limit(parseInt(limit))
-        .populate('user', 'fullName email');
-
-      const total = await ServiceProvider.countDocuments();
-
-      const data = providers.map(p => ({
-        id: p._id,
-        companyName: p.companyName,
-        fullName: p.user?.fullName,
-        email: p.user?.email,
-        serviceType: p.serviceType,
-        city: p.city,
-        state: p.state,
-        verificationStatus: p.verificationStatus,
-        lastActive: p.lastActive,
-        isAvailable: p.isAvailable,
-        completedJobs: p.completedJobs,
-        rating: p.rating
-      }));
-
-      res.json({ success: true, data, pagination: { total, page: parseInt(page), pages: Math.ceil(total/limit) } });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
-    }
-  }
-
-  // GET /api/admin/reports
-  static async getReports(req, res) {
-    try {
-      const reports = await Notification.find({ kind: 'report' })
-        .sort({ createdAt: -1 })
-        .limit(50)
-        .populate('user', 'fullName email');
-
-      res.json({ success: true, data: reports });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
-    }
-  }
-
-  // PATCH /api/admin/reports/:id/resolve
-  static async resolveReport(req, res) {
-    try {
-      await Notification.findByIdAndUpdate(req.params.id, { read: true, kind: 'info' });
-      res.json({ success: true, message: 'Report resolved' });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
-    }
-  }
-
-  // GET /api/admin/admins (super admin only)
-  static async getAdmins(req, res) {
-    try {
-      const admins = await Admin.find().select('-password');
-      res.json({ success: true, data: admins });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
-    }
-  }
-
-  // POST /api/admin/admins (super admin only)
-  static async createAdmin(req, res) {
-    try {
-      const { email, password, fullName, role } = req.body;
-      const admin = await Admin.create({ email, password, fullName, role: role || 'admin' });
-      res.json({ success: true, data: { id: admin._id, email: admin.email, fullName: admin.fullName, role: admin.role } });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
-    }
-  }
-
-  // DELETE /api/admin/admins/:id (super admin only)
-  static async deleteAdmin(req, res) {
-    try {
-      await Admin.findByIdAndDelete(req.params.id);
-      res.json({ success: true, message: 'Admin deleted' });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
-    }
-  }
-
-  // GET /api/admin/settings
-  static async getSettings(req, res) {
-    res.json({ success: true, data: { siteName: '9jaTradiesPages', supportEmail: 'support@9jatradiespages.com' } });
-  }
-
-  // PUT /api/admin/settings
-  static async updateSettings(req, res) {
-    res.json({ success: true, message: 'Settings updated' });
-  }
-
-  // GET /api/admin/dashboard
-// controllers/adminController.js - Fix getDashboard
+  // ✅ FIXED: Accurate dashboard stats
+// controllers/adminController.js - FIXED getDashboard
 static async getDashboard(req, res) {
     try {
-      const [totalUsers, totalProviders, totalCustomers, totalConversations, recentProviders, recentUsers] = await Promise.all([
-        User.countDocuments({ accountType: { $ne: 'admin' } }),
+      const [
+        totalVerifiedUsers,
+        totalCustomers,
+        totalProviders,
+        totalProviderDocs,
+        totalConversations,
+        pendingVerifications,
+        approvedProviders,
+        recentProviders,
+        recentUsers
+      ] = await Promise.all([
+        // ✅ Only count users who have verified their email
+        User.countDocuments({ isEmailVerified: true, accountType: { $ne: 'admin' } }),
+        // ✅ Customers = verified + customer type
+        User.countDocuments({ accountType: 'customer', isEmailVerified: true }),
+        // ✅ Providers = verified + provider type (these are User documents)
+        User.countDocuments({ accountType: 'provider', isEmailVerified: true }),
+        // ✅ Total ServiceProvider documents
         ServiceProvider.countDocuments(),
-        User.countDocuments({ accountType: 'customer' }),
         Conversation.countDocuments(),
-        ServiceProvider.find().sort({ createdAt: -1 }).limit(5).populate('user', 'fullName email'),
-        User.find({ accountType: { $ne: 'admin' } }).sort({ createdAt: -1 }).limit(5)
+        // ✅ Pending = submitted for verification
+        ServiceProvider.countDocuments({ verificationStatus: 'submitted' }),
+        // ✅ Approved
+        ServiceProvider.countDocuments({ verificationStatus: 'approved' }),
+        // Recent
+        ServiceProvider.find({ verificationStatus: { $in: ['submitted', 'approved'] } })
+          .sort({ createdAt: -1 }).limit(5).populate('user', 'fullName email'),
+        User.find({ isEmailVerified: true, accountType: { $ne: 'admin' } })
+          .sort({ createdAt: -1 }).limit(5)
       ]);
-
-      // Use verificationStatus instead of isVerified
-      const pendingVerifications = await ServiceProvider.countDocuments({ 
-        verificationStatus: 'submitted' 
-      });
 
       res.json({
         success: true,
         data: {
           stats: {
-            totalUsers,
-            totalProviders,
-            totalCustomers,
+            totalUsers: totalVerifiedUsers,        // ✅ Only verified users
+            totalCustomers: totalCustomers,         // ✅ Verified customers
+            totalProviders: totalProviders,         // ✅ Verified providers (User model)
+            totalProviderDocs: totalProviderDocs,   // ✅ ServiceProvider documents
             totalConversations,
             pendingVerifications,
-            verifiedProviders: totalProviders - pendingVerifications
+            verifiedProviders: approvedProviders
           },
           recentProviders: recentProviders.map(p => ({
             id: p._id,
@@ -221,7 +76,7 @@ static async getDashboard(req, res) {
             fullName: p.user?.fullName,
             email: p.user?.email,
             serviceType: p.serviceType,
-            verificationStatus: p.verificationStatus, // ✅ Use this instead of isVerified
+            verificationStatus: p.verificationStatus,
             isVisible: p.isVisible,
             city: p.city,
             state: p.state,
@@ -237,31 +92,60 @@ static async getDashboard(req, res) {
           }))
         }
       });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
+    } catch (error) { 
+      console.error('Dashboard error:', error);
+      res.status(500).json({ success: false, message: error.message }); 
     }
   }
-  // GET /api/admin/users
-  static async getUsers(req, res) {
+
+  // ✅ FIXED: Users list with proper filters
+// controllers/adminController.js - FIXED getUsers
+static async getUsers(req, res) {
     try {
       const { page = 1, limit = 20, search, accountType } = req.query;
-      const filter = {};
-      if (search) filter.$or = [{ fullName: { $regex: search, $options: 'i' } }, { email: { $regex: search, $options: 'i' } }];
-      if (accountType) filter.accountType = accountType;
+      
+      // ✅ Only verified users with proper account types
+      const filter = { 
+        isEmailVerified: true,
+        accountType: { $in: ['customer', 'provider'] } // Only customers and providers
+      };
+      
+      if (search) {
+        filter.$or = [
+          { fullName: { $regex: search, $options: 'i' } }, 
+          { email: { $regex: search, $options: 'i' } }
+        ];
+      }
+      
+      if (accountType && accountType !== 'all') {
+        filter.accountType = accountType;
+      }
 
       const [users, total] = await Promise.all([
-        User.find(filter).sort({ createdAt: -1 }).skip((page-1)*limit).limit(parseInt(limit)),
+        User.find(filter)
+          .select('fullName email phone accountType isActive isEmailVerified createdAt lastLogin')
+          .sort({ createdAt: -1 })
+          .skip((parseInt(page) - 1) * parseInt(limit))
+          .limit(parseInt(limit)),
         User.countDocuments(filter)
       ]);
 
-      res.json({ success: true, data: users, pagination: { total, page: parseInt(page), pages: Math.ceil(total/limit) } });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
+      res.json({ 
+        success: true, 
+        data: users,
+        pagination: { 
+          total, 
+          page: parseInt(page), 
+          pages: Math.ceil(total / parseInt(limit)) 
+        } 
+      });
+    } catch (error) { 
+      res.status(500).json({ success: false, message: error.message }); 
     }
   }
 
-  // GET /api/admin/providers
-// controllers/adminController.js - Fix getProviders
+  // ✅ FIXED: Providers list with proper filters
+// controllers/adminController.js - FIXED getProviders
 static async getProviders(req, res) {
     try {
       const { page = 1, limit = 20, search, verificationStatus } = req.query;
@@ -278,12 +162,10 @@ static async getProviders(req, res) {
         filter.verificationStatus = verificationStatus;
       }
 
-      console.log('Provider filter:', filter);
-
       const [providers, total] = await Promise.all([
         ServiceProvider.find(filter)
           .sort({ createdAt: -1 })
-          .skip((parseInt(page)-1) * parseInt(limit))
+          .skip((parseInt(page) - 1) * parseInt(limit))
           .limit(parseInt(limit))
           .populate('user', 'fullName email phone'),
         ServiceProvider.countDocuments(filter)
@@ -291,30 +173,83 @@ static async getProviders(req, res) {
 
       res.json({ 
         success: true, 
-        data: providers, 
+        data: providers,
         pagination: { 
           total, 
           page: parseInt(page), 
           pages: Math.ceil(total / parseInt(limit)) 
         } 
       });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
+    } catch (error) { 
+      res.status(500).json({ success: false, message: error.message }); 
     }
   }
 
-  // PATCH /api/admin/providers/:id/verify
-  static async verifyProvider(req, res) {
+  // ✅ FIXED: Approve with instant UI update and alert
+  static async approveProvider(req, res) {
     try {
-      const provider = await ServiceProvider.findByIdAndUpdate(req.params.id, { isVerified: true }, { new: true });
+      const provider = await ServiceProvider.findByIdAndUpdate(
+        req.params.id,
+        { $set: { verificationStatus: 'approved', isVisible: true, verifiedAt: new Date() } },
+        { new: true }
+      ).populate('user', 'email fullName');
+
       if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
-      res.json({ success: true, message: 'Provider verified', data: provider });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
-    }
+
+      await Notification.create({
+        user: provider.user._id,
+        text: '🎉 Congratulations! Your profile has been approved and is now visible to customers.',
+        kind: 'success'
+      });
+
+      try {
+        const emailService = require('../services/emailService');
+        await emailService.sendApprovalEmail(provider.user, provider);
+      } catch (e) { console.error('Email failed:', e.message); }
+
+      res.json({
+        success: true,
+        message: 'Provider approved successfully!',
+        data: {
+          _id: provider._id,
+          companyName: provider.companyName,
+          verificationStatus: 'approved',
+          isVisible: true
+        }
+      });
+    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
   }
 
-  // PATCH /api/admin/users/:id/toggle-status
+  // ✅ Reject provider
+  static async rejectProvider(req, res) {
+    try {
+      const { reason } = req.body;
+      if (!reason?.trim()) return res.status(400).json({ success: false, message: 'Rejection reason is required' });
+
+      const provider = await ServiceProvider.findByIdAndUpdate(
+        req.params.id,
+        { $set: { verificationStatus: 'rejected', rejectionReason: reason.trim(), rejectionDate: new Date(), isVisible: false } },
+        { new: true }
+      ).populate('user', 'email fullName');
+
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      await Notification.create({
+        user: provider.user._id,
+        text: `❌ Your profile was not approved. Reason: ${reason}. You can update and resubmit.`,
+        kind: 'action'
+      });
+
+      try {
+        const emailService = require('../services/emailService');
+        await emailService.sendRejectionEmail(provider.user, provider, reason);
+      } catch (e) { console.error('Email failed:', e.message); }
+
+      res.json({ success: true, message: 'Provider rejected', data: provider });
+    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+  }
+
+  // ✅ Toggle user status
   static async toggleUserStatus(req, res) {
     try {
       const user = await User.findById(req.params.id);
@@ -322,117 +257,114 @@ static async getProviders(req, res) {
       user.isActive = !user.isActive;
       await user.save();
       res.json({ success: true, message: `User ${user.isActive ? 'activated' : 'deactivated'}`, data: user });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
-    }
+    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
   }
 
-  // DELETE /api/admin/users/:id
+  // ✅ Delete user
   static async deleteUser(req, res) {
     try {
       await User.findByIdAndDelete(req.params.id);
       await ServiceProvider.findOneAndDelete({ user: req.params.id });
       res.json({ success: true, message: 'User deleted' });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
-    }
+    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
   }
 
-  // controllers/adminController.js - Add these methods
-
-// PATCH /api/admin/providers/:id/approve
-// controllers/adminController.js - Update approveProvider
-// controllers/adminController.js - Fixed approveProvider with email
-static async approveProvider(req, res) {
+  // ✅ Export users as CSV
+// controllers/adminController.js - Add these methods
+static async exportUsers(req, res) {
     try {
-      const provider = await ServiceProvider.findByIdAndUpdate(
-        req.params.id,
-        { 
-          $set: { 
-            verificationStatus: 'approved', 
-            isVisible: true,
-            verifiedAt: new Date()
-          } 
-        },
-        { new: true }
-      ).populate('user', 'email fullName');
-
-      if (!provider) {
-        return res.status(404).json({ success: false, message: 'Provider not found' });
-      }
-
-      // Create notification
-      await Notification.create({
-        user: provider.user._id,
-        text: '🎉 Congratulations! Your profile has been approved and is now visible to customers.',
-        kind: 'success'
-      });
-
-      // Send approval email
-      try {
-        const emailService = require('../services/emailService');
-        const result = await emailService.sendApprovalEmail(provider.user, provider);
-        console.log('Approval email result:', result);
-      } catch (emailError) {
-        console.error('Failed to send approval email:', emailError.message);
-      }
-
-      res.json({ success: true, message: 'Provider approved and notified', data: provider });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
-    }
-  }
-
-
-
-  // PATCH /api/admin/providers/:id/reject
-  static async rejectProvider(req, res) {
-    try {
-      const { reason } = req.body;
+      const users = await User.find({ 
+        isEmailVerified: true, 
+        accountType: { $in: ['customer', 'provider'] } 
+      }).select('fullName email phone accountType isActive createdAt lastLogin');
       
-      if (!reason?.trim()) {
-        return res.status(400).json({ success: false, message: 'Rejection reason is required' });
-      }
-
-      const provider = await ServiceProvider.findByIdAndUpdate(
-        req.params.id,
-        { 
-          $set: { 
-            verificationStatus: 'rejected',
-            rejectionReason: reason.trim(),
-            rejectionDate: new Date(),
-            isVisible: false
-          } 
-        },
-        { new: true }
-      ).populate('user', 'email fullName');
-
-      if (!provider) {
-        return res.status(404).json({ success: false, message: 'Provider not found' });
-      }
-
-      // Create notification
-      await Notification.create({
-        user: provider.user._id,
-        text: `❌ Your profile was not approved. Reason: ${reason}. You can update and resubmit.`,
-        kind: 'action'
-      });
-
-      // Send rejection email
-      try {
-        const emailService = require('../services/emailService');
-        await emailService.sendRejectionEmail(provider.user, provider, reason);
-        console.log('Rejection email sent to:', provider.user.email);
-      } catch (emailError) {
-        console.error('Failed to send rejection email:', emailError);
-        // Don't fail the request if email fails
-      }
-
-      res.json({ success: true, message: 'Provider rejected and notified', data: provider });
-    } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
+      const csv = [
+        'Full Name,Email,Phone,Account Type,Status,Joined,Last Login',
+        ...users.map(u => `"${u.fullName || ''}","${u.email || ''}","${u.phone || 'N/A'}","${u.accountType}","${u.isActive ? 'Active' : 'Disabled'}","${u.createdAt ? new Date(u.createdAt).toLocaleDateString() : ''}","${u.lastLogin ? new Date(u.lastLogin).toLocaleDateString() : 'Never'}"`)
+      ].join('\n');
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename=users-export.csv');
+      res.send(csv);
+    } catch (error) { 
+      res.status(500).json({ success: false, message: error.message }); 
     }
+  }
+
+  static async exportProviders(req, res) {
+    try {
+      const providers = await ServiceProvider.find()
+        .populate('user', 'fullName email phone')
+        .lean();
+      
+      const csv = [
+        'Company Name,Full Name,Email,Phone,Service Type,Status,City,State,Rating,Jobs,NIN,Joined,Last Active',
+        ...providers.map(p => `"${p.companyName || ''}","${p.user?.fullName || ''}","${p.user?.email || ''}","${p.user?.phone || 'N/A'}","${p.serviceType || ''}","${p.verificationStatus || 'pending'}","${p.city || ''}","${p.state || ''}","${p.rating || 0}","${p.completedJobs || 0}","${p.nin?.number || 'N/A'}","${p.createdAt ? new Date(p.createdAt).toLocaleDateString() : ''}","${p.lastActive ? new Date(p.lastActive).toLocaleDateString() : 'Never'}"`)
+      ].join('\n');
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename=providers-export.csv');
+      res.send(csv);
+    } catch (error) { 
+      res.status(500).json({ success: false, message: error.message }); 
+    }
+  }
+  // ✅ Reports
+  static async getReports(req, res) {
+    try {
+      const reports = await Notification.find({ kind: 'report' }).sort({ createdAt: -1 }).limit(50).populate('user', 'fullName email');
+      res.json({ success: true, data: reports });
+    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+  }
+
+  static async resolveReport(req, res) {
+    try {
+      const report = await Notification.findByIdAndUpdate(req.params.id, { read: true, kind: 'info' }, { new: true });
+      if (!report) return res.status(404).json({ success: false, message: 'Report not found' });
+      res.json({ success: true, message: 'Report resolved', data: report });
+    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+  }
+
+  // ✅ Contacts
+  static async getCustomerContacts(req, res) {
+    try {
+      const conversations = await Conversation.find().sort({ lastMessageAt: -1 }).limit(50)
+        .populate('customer', 'fullName email').populate('professional', 'companyName serviceType');
+      const data = conversations.map(c => ({
+        id: c._id, customerName: c.customer?.fullName, customerEmail: c.customer?.email,
+        providerName: c.professional?.companyName, serviceType: c.professional?.serviceType,
+        lastContact: c.lastMessageAt, messageCount: c.messages.length
+      }));
+      res.json({ success: true, data });
+    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+  }
+
+  // ✅ Provider Activity
+  static async getProviderActivity(req, res) {
+    try {
+      const providers = await ServiceProvider.find().sort({ lastActive: -1 }).limit(50).populate('user', 'fullName email');
+      const data = providers.map(p => ({
+        id: p._id, companyName: p.companyName, fullName: p.user?.fullName, email: p.user?.email,
+        serviceType: p.serviceType, verificationStatus: p.verificationStatus,
+        lastActive: p.lastActive, isAvailable: p.isAvailable, completedJobs: p.completedJobs, rating: p.rating
+      }));
+      res.json({ success: true, data });
+    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+  }
+
+  // ✅ Admin management (super admin)
+  static async getAdmins(req, res) {
+    try { const admins = await Admin.find().select('-password'); res.json({ success: true, data: admins }); }
+    catch (error) { res.status(500).json({ success: false, message: error.message }); }
+  }
+  static async createAdmin(req, res) {
+    try { const { email, password, fullName, role } = req.body; const admin = await Admin.create({ email, password, fullName, role: role || 'admin' }); res.json({ success: true, data: { id: admin._id, email: admin.email, fullName: admin.fullName, role: admin.role } }); }
+    catch (error) { res.status(500).json({ success: false, message: error.message }); }
+  }
+  static async deleteAdmin(req, res) {
+    try { await Admin.findByIdAndDelete(req.params.id); res.json({ success: true, message: 'Admin deleted' }); }
+    catch (error) { res.status(500).json({ success: false, message: error.message }); }
   }
 }
 
-module.exports = AdminController;
+module.exports = AdminController; 

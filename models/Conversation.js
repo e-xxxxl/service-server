@@ -1,5 +1,6 @@
-// models/Conversation.js
+// models/Conversation.js - Add quote field to messages
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 
 const conversationSchema = new mongoose.Schema({
   customer: {
@@ -9,7 +10,7 @@ const conversationSchema = new mongoose.Schema({
   },
   professional: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'ServiceProvider',  // Changed from 'Professional' to 'ServiceProvider'
+    ref: 'ServiceProvider',
     required: true
   },
   messages: [{
@@ -24,7 +25,51 @@ const conversationSchema = new mongoose.Schema({
     },
     text: {
       type: String,
-      required: true
+      default: ''
+    },
+    // ✅ Quote/Built-in message types
+    messageType: {
+      type: String,
+      enum: ['text', 'quote', 'booking_confirmed', 'payment_requested', 'job_completed'],
+      default: 'text'
+    },
+    // ✅ Quote data
+    quote: {
+      description: String,
+      amount: Number,
+      currency: { type: String, default: 'NGN' },
+      items: [{
+        name: String,
+        description: String,
+        quantity: { type: Number, default: 1 },
+        unitPrice: Number,
+        total: Number
+      }],
+      validUntil: Date,
+      status: {
+        type: String,
+        enum: ['pending', 'accepted', 'rejected', 'expired'],
+        default: 'pending'
+      },
+      acceptedAt: Date,
+      rejectedAt: Date
+    },
+    // ✅ Booking/Payment data
+    booking: {
+      status: {
+        type: String,
+        enum: ['pending', 'confirmed', 'in_progress', 'completed', 'cancelled'],
+        default: 'pending'
+      },
+      amount: Number,
+      paymentMethod: String,
+      paymentStatus: {
+        type: String,
+        enum: ['unpaid', 'paid', 'refunded'],
+        default: 'unpaid'
+      },
+      scheduledDate: Date,
+      completedAt: Date
     },
     read: {
       type: Boolean,
@@ -39,21 +84,8 @@ const conversationSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
-  customerUnread: {
-    type: Boolean,
-    default: false
-  },
-  providerUnread: {
-    type: Boolean,
-    default: false
-  }
-}, {
-  timestamps: true
-});
+  customerUnread: { type: Boolean, default: false },
+  providerUnread: { type: Boolean, default: false }
+}, { timestamps: true });
 
-// Indexes
-conversationSchema.index({ customer: 1, professional: 1 }, { unique: true });
-conversationSchema.index({ lastMessageAt: -1 });
-
-const Conversation = mongoose.model('Conversation', conversationSchema);
-module.exports = Conversation;
+module.exports = mongoose.model('Conversation', conversationSchema);

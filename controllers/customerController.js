@@ -280,20 +280,110 @@ static async getProviderProfile(req, res) {
       res.status(500).json({ success: false, message: 'Failed to load provider profile' });
     }
   }
+
+  // controllers/customerController.js - Add acceptQuote method
+// controllers/customerController.js - Fix acceptQuote
+static async acceptQuote(req, res) {
+    try {
+      const { conversationId, messageId } = req.params;
+      const userId = req.user.id;
+
+      const conversation = await Conversation.findOne({
+        _id: conversationId,
+        customer: userId
+      });
+
+      if (!conversation) {
+        return res.status(404).json({ success: false, message: 'Conversation not found' });
+      }
+
+      // Find the quote message by _id
+      const message = conversation.messages.id(messageId);
+      
+      if (!message) {
+        return res.status(404).json({ success: false, message: 'Quote message not found' });
+      }
+
+      if (message.messageType !== 'quote') {
+        return res.status(400).json({ success: false, message: 'This message is not a quote' });
+      }
+
+      if (!message.quote) {
+        return res.status(400).json({ success: false, message: 'Quote data is missing' });
+      }
+
+      if (message.quote.status !== 'pending') {
+        return res.status(400).json({ success: false, message: 'This quote is no longer available' });
+      }
+
+      // Update quote status
+      message.quote.status = 'accepted';
+      message.quote.acceptedAt = new Date();
+
+      // Create booking
+      const bookingData = {
+        status: 'confirmed',
+        amount: message.quote.amount,
+        paymentStatus: 'paid',
+        paymentMethod: 'platform',
+        scheduledDate: new Date()
+      };
+
+      message.booking = bookingData;
+
+      // Add confirmation message
+      conversation.messages.push({
+        sender: userId,
+        senderModel: 'User',
+        text: `✅ Booking confirmed! Amount: ₦${message.quote.amount.toLocaleString()}`,
+        messageType: 'booking_confirmed',
+        quote: message.quote,
+        booking: bookingData,
+        createdAt: new Date()
+      });
+
+      conversation.lastMessageAt = new Date();
+      conversation.customerUnread = false;
+      conversation.providerUnread = true;
+      
+      await conversation.save();
+
+      // Notify provider
+      await Notification.create({
+        user: conversation.professional,
+        text: `🎉 Great news! A customer has accepted your quote of ₦${message.quote.amount.toLocaleString()} and booked your service.`,
+        kind: 'success'
+      });
+
+      res.json({ 
+        success: true, 
+        message: 'Booking confirmed successfully!',
+        data: {
+          quote: message.quote,
+          booking: bookingData
+        }
+      });
+    } catch (error) {
+      console.error('Accept quote error:', error);
+      res.status(500).json({ success: false, message: 'Failed to accept quote' });
+    }
+  }
   // controllers/customerController.js - Add submitReport
+// controllers/customerController.js
 static async submitReport(req, res) {
     try {
-      const { subject, message, providerId } = req.body;
+      const { subject, message, type } = req.body;
       const userId = req.user.id;
+      const user = await User.findById(userId);
 
       await Notification.create({
         user: userId,
-        text: `Report submitted: ${subject}`,
+        text: `📝 Report: ${subject || 'Support request'}`,
         kind: 'report',
-        metadata: { message, providerId, customerId: userId }
+        metadata: { message, type, customerEmail: user.email, customerName: user.fullName }
       });
 
-      res.json({ success: true, message: 'Report submitted successfully' });
+      res.json({ success: true, message: 'Report submitted. Our team will review it shortly.' });
     } catch (error) {
       res.status(500).json({ success: false, message: 'Failed to submit report' });
     }
@@ -463,27 +553,17 @@ static async sendMessage(req, res) {
   // Add these methods to customerController.js
 
 // GET /api/customer/messages
+// controllers/customerController.js - getMessages
 static async getMessages(req, res) {
     try {
       const userId = req.user.id;
-      
-      const conversations = await Conversation.find({
-        customer: userId
-      })
-      .sort({ lastMessageAt: -1 })
-      .populate({
-        path: 'professional',
-        model: 'ServiceProvider',
-        populate: {
-          path: 'user',
-          model: 'User',
-          select: 'fullName'
-        }
-      });
+      const conversations = await Conversation.find({ customer: userId })
+        .sort({ lastMessageAt: -1 })
+        .populate({ path: 'professional', model: 'ServiceProvider', populate: { path: 'user', model: 'User', select: 'fullName' } });
 
       const formattedConversations = conversations.map(conv => ({
         id: conv._id.toString(),
-        professionalId: conv.professional?._id.toString(),
+        professionalId: conv.professional?._id?.toString(),
         name: conv.professional?.user?.fullName || conv.professional?.companyName || 'Unknown',
         companyName: conv.professional?.companyName,
         trade: conv.professional?.serviceType,
@@ -493,13 +573,47 @@ static async getMessages(req, res) {
         messageCount: conv.messages.length
       }));
 
+      res.json({ success: true, data: formattedConversations });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Failed to fetch messages' });
+    }
+  }
+
+// ✅ Fix getConversation to return full message data
+static async getConversation(req, res) {
+    try {
+      const { conversationId } = req.params;
+      const conversation = await Conversation.findOne({ _id: conversationId, customer: req.user.id })
+        .populate({ path: 'professional', model: 'ServiceProvider', populate: { path: 'user', model: 'User', select: 'fullName' } });
+
+      if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
+
+      conversation.customerUnread = false;
+      await conversation.save();
+
       res.json({
         success: true,
-        data: formattedConversations
+        data: {
+          id: conversation._id.toString(),
+          professionalId: conversation.professional?._id?.toString(),
+          name: conversation.professional?.user?.fullName || conversation.professional?.companyName,
+          companyName: conversation.professional?.companyName,
+          messages: conversation.messages.map(m => ({
+            _id: m._id, // ✅ Critical for quote acceptance
+            id: m._id,
+            text: m.text || '',
+            sender: m.sender?.toString(),
+            senderModel: m.senderModel,
+            messageType: m.messageType || 'text', // ✅ Include messageType
+            quote: m.quote || null, // ✅ Include quote
+            booking: m.booking || null, // ✅ Include booking
+            createdAt: m.createdAt,
+            read: m.read
+          }))
+        }
       });
     } catch (error) {
-      console.error('Get messages error:', error);
-      res.status(500).json({ success: false, message: 'Failed to fetch messages' });
+      res.status(500).json({ success: false, message: 'Failed to fetch conversation' });
     }
   }
 
