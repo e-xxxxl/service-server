@@ -8,22 +8,21 @@ const passport = require('../config/passport');
 
 class AuthController {
 
-  static async signup(req, res) {
+// controllers/authController.js - Add email validation
+static async signup(req, res) {
     try {
-      const { 
-        fullName, 
-        email, 
-        password, 
-        accountType = 'customer', 
-        phone,
-        // Provider-specific fields
-        companyName,
-        serviceType,
-        state,
-        city
-      } = req.body;
+      const { fullName, email, password, accountType = 'customer', phone, companyName, serviceType, state, city } = req.body;
 
-      // Validate provider fields if account type is provider
+      // ✅ Validate email format strictly
+      const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+      if (!email || !emailRegex.test(email)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide a valid email address (e.g., name@example.com)'
+        });
+      }
+
+      // Validate provider fields
       if (accountType === 'provider') {
         const missingFields = [];
         if (!companyName?.trim()) missingFields.push('Company name');
@@ -33,20 +32,14 @@ class AuthController {
         if (!phone?.trim()) missingFields.push('Phone number');
         
         if (missingFields.length > 0) {
-          return res.status(400).json({
-            success: false,
-            message: `Required fields missing: ${missingFields.join(', ')}`
-          });
+          return res.status(400).json({ success: false, message: `Required fields: ${missingFields.join(', ')}` });
         }
       }
 
       // Check if user exists
-      const existingUser = await User.findOne({ email: email.toLowerCase() });
+      const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
       if (existingUser) {
-        return res.status(409).json({
-          success: false,
-          message: 'User with this email already exists'
-        });
+        return res.status(409).json({ success: false, message: 'An account with this email already exists' });
       }
 
       // Generate verification token
@@ -54,47 +47,33 @@ class AuthController {
 
       // Create user
       const user = await User.create({
-        fullName,
-        email: email.toLowerCase(),
+        fullName: fullName?.trim(),
+        email: email.toLowerCase().trim(),
         password,
         accountType,
-        phone: phone || '',
+        phone: phone?.trim() || '',
         emailVerificationToken: verificationToken,
         isEmailVerified: false
       });
 
-      // If provider, create provider profile with location
+      // If provider, create provider profile
       if (accountType === 'provider') {
         const providerData = {
           user: user._id,
           companyName: companyName.trim(),
           serviceType: serviceType.toLowerCase().trim(),
-          city: city.trim(),
-          state: state.trim(),
-          businessAddress: {
-            city: city.trim(),
-            state: state.trim()
-          },
-          serviceArea: [{
-            city: city.trim(),
-            state: state.trim(),
-            radius: 50
-          }],
+          city: city?.trim() || '',
+          state: state?.trim() || '',
+          businessAddress: { city: city?.trim() || '', state: state?.trim() || '' },
+          serviceArea: [{ city: city?.trim() || '', state: state?.trim() || '', radius: 50 }],
+          verificationStatus: 'pending',
+          isVisible: false,
           isAvailable: true
         };
 
         const providerProfile = await ServiceProvider.create(providerData);
-
-        // Link profile to user
         user.providerProfile = providerProfile._id;
         await user.save();
-
-        console.log('Provider profile created:', {
-          userId: user._id,
-          profileId: providerProfile._id,
-          companyName: providerProfile.companyName,
-          location: `${providerProfile.city}, ${providerProfile.state}`
-        });
       }
 
       // Send verification email
@@ -103,28 +82,16 @@ class AuthController {
       res.status(201).json({
         success: true,
         message: 'Account created. Please check your email to verify.',
-        data: { 
-          email: user.email,
-          accountType: user.accountType,
-          userId: user._id
-        }
+        data: { email: user.email, accountType: user.accountType, userId: user._id }
       });
 
     } catch (error) {
       console.error('Signup error:', error);
-      
       if (error.name === 'ValidationError') {
         const messages = Object.values(error.errors).map(err => err.message);
-        return res.status(400).json({
-          success: false,
-          message: messages.join('. ')
-        });
+        return res.status(400).json({ success: false, message: messages.join('. ') });
       }
-      
-      res.status(500).json({
-        success: false,
-        message: 'Failed to create account'
-      });
+      res.status(500).json({ success: false, message: 'Failed to create account' });
     }
   }
 

@@ -25,6 +25,7 @@ class AdminController {
 
   // ✅ FIXED: Accurate dashboard stats
 // controllers/adminController.js - FIXED getDashboard
+// controllers/adminController.js - FIXED getDashboard with correct stats
 static async getDashboard(req, res) {
     try {
       const [
@@ -38,21 +39,21 @@ static async getDashboard(req, res) {
         recentProviders,
         recentUsers
       ] = await Promise.all([
-        // ✅ Only count users who have verified their email
+        // ✅ Only verified users (email confirmed)
         User.countDocuments({ isEmailVerified: true, accountType: { $ne: 'admin' } }),
-        // ✅ Customers = verified + customer type
+        // ✅ Verified customers only
         User.countDocuments({ accountType: 'customer', isEmailVerified: true }),
-        // ✅ Providers = verified + provider type (these are User documents)
+        // ✅ Verified providers (User model)
         User.countDocuments({ accountType: 'provider', isEmailVerified: true }),
-        // ✅ Total ServiceProvider documents
+        // ✅ All ServiceProvider documents
         ServiceProvider.countDocuments(),
         Conversation.countDocuments(),
-        // ✅ Pending = submitted for verification
+        // ✅ Pending verification
         ServiceProvider.countDocuments({ verificationStatus: 'submitted' }),
         // ✅ Approved
         ServiceProvider.countDocuments({ verificationStatus: 'approved' }),
         // Recent
-        ServiceProvider.find({ verificationStatus: { $in: ['submitted', 'approved'] } })
+        ServiceProvider.find({ verificationStatus: { $in: ['submitted', 'approved', 'rejected'] } })
           .sort({ createdAt: -1 }).limit(5).populate('user', 'fullName email'),
         User.find({ isEmailVerified: true, accountType: { $ne: 'admin' } })
           .sort({ createdAt: -1 }).limit(5)
@@ -62,38 +63,27 @@ static async getDashboard(req, res) {
         success: true,
         data: {
           stats: {
-            totalUsers: totalVerifiedUsers,        // ✅ Only verified users
-            totalCustomers: totalCustomers,         // ✅ Verified customers
-            totalProviders: totalProviders,         // ✅ Verified providers (User model)
-            totalProviderDocs: totalProviderDocs,   // ✅ ServiceProvider documents
+            totalUsers: totalVerifiedUsers,
+            totalCustomers: totalCustomers,
+            totalProviders: totalProviders,
+            totalProviderDocs: totalProviderDocs,
             totalConversations,
             pendingVerifications,
             verifiedProviders: approvedProviders
           },
           recentProviders: recentProviders.map(p => ({
-            id: p._id,
-            companyName: p.companyName,
-            fullName: p.user?.fullName,
-            email: p.user?.email,
-            serviceType: p.serviceType,
-            verificationStatus: p.verificationStatus,
-            isVisible: p.isVisible,
-            city: p.city,
-            state: p.state,
-            createdAt: p.createdAt
+            id: p._id, companyName: p.companyName, fullName: p.user?.fullName,
+            email: p.user?.email, serviceType: p.serviceType,
+            verificationStatus: p.verificationStatus, isVisible: p.isVisible,
+            city: p.city, state: p.state, createdAt: p.createdAt
           })),
           recentUsers: recentUsers.map(u => ({
-            id: u._id,
-            fullName: u.fullName,
-            email: u.email,
-            accountType: u.accountType,
-            isEmailVerified: u.isEmailVerified,
-            createdAt: u.createdAt
+            id: u._id, fullName: u.fullName, email: u.email,
+            accountType: u.accountType, isEmailVerified: u.isEmailVerified, createdAt: u.createdAt
           }))
         }
       });
     } catch (error) { 
-      console.error('Dashboard error:', error);
       res.status(500).json({ success: false, message: error.message }); 
     }
   }
@@ -186,7 +176,8 @@ static async getProviders(req, res) {
   }
 
   // ✅ FIXED: Approve with instant UI update and alert
-  static async approveProvider(req, res) {
+ // controllers/adminController.js - approveProvider with instant update
+static async approveProvider(req, res) {
     try {
       const provider = await ServiceProvider.findByIdAndUpdate(
         req.params.id,
@@ -196,23 +187,24 @@ static async getProviders(req, res) {
 
       if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
 
+      // Create notification
       await Notification.create({
         user: provider.user._id,
         text: '🎉 Congratulations! Your profile has been approved and is now visible to customers.',
         kind: 'success'
       });
 
+      // Try sending email
       try {
         const emailService = require('../services/emailService');
         await emailService.sendApprovalEmail(provider.user, provider);
-      } catch (e) { console.error('Email failed:', e.message); }
+      } catch (e) { console.error('Approval email failed:', e.message); }
 
-      res.json({
-        success: true,
+      res.json({ 
+        success: true, 
         message: 'Provider approved successfully!',
         data: {
           _id: provider._id,
-          companyName: provider.companyName,
           verificationStatus: 'approved',
           isVisible: true
         }
@@ -271,41 +263,41 @@ static async getProviders(req, res) {
 
   // ✅ Export users as CSV
 // controllers/adminController.js - Add these methods
+// controllers/adminController.js - Export methods
+// controllers/adminController.js - Fix export methods
 static async exportUsers(req, res) {
     try {
-      const users = await User.find({ 
-        isEmailVerified: true, 
-        accountType: { $in: ['customer', 'provider'] } 
-      }).select('fullName email phone accountType isActive createdAt lastLogin');
+      const users = await User.find({ isEmailVerified: true, accountType: { $in: ['customer', 'provider'] } })
+        .select('fullName email phone accountType isActive createdAt lastLogin').lean();
       
       const csv = [
         'Full Name,Email,Phone,Account Type,Status,Joined,Last Login',
         ...users.map(u => `"${u.fullName || ''}","${u.email || ''}","${u.phone || 'N/A'}","${u.accountType}","${u.isActive ? 'Active' : 'Disabled'}","${u.createdAt ? new Date(u.createdAt).toLocaleDateString() : ''}","${u.lastLogin ? new Date(u.lastLogin).toLocaleDateString() : 'Never'}"`)
       ].join('\n');
       
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', 'attachment; filename=users-export.csv');
-      res.send(csv);
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename=users-export-${Date.now()}.csv`);
+      res.send('\uFEFF' + csv);
     } catch (error) { 
+      console.error('Export users error:', error);
       res.status(500).json({ success: false, message: error.message }); 
     }
   }
 
   static async exportProviders(req, res) {
     try {
-      const providers = await ServiceProvider.find()
-        .populate('user', 'fullName email phone')
-        .lean();
+      const providers = await ServiceProvider.find().populate('user', 'fullName email phone').lean();
       
       const csv = [
-        'Company Name,Full Name,Email,Phone,Service Type,Status,City,State,Rating,Jobs,NIN,Joined,Last Active',
-        ...providers.map(p => `"${p.companyName || ''}","${p.user?.fullName || ''}","${p.user?.email || ''}","${p.user?.phone || 'N/A'}","${p.serviceType || ''}","${p.verificationStatus || 'pending'}","${p.city || ''}","${p.state || ''}","${p.rating || 0}","${p.completedJobs || 0}","${p.nin?.number || 'N/A'}","${p.createdAt ? new Date(p.createdAt).toLocaleDateString() : ''}","${p.lastActive ? new Date(p.lastActive).toLocaleDateString() : 'Never'}"`)
+        'Company Name,Full Name,Email,Phone,Service Type,Status,City,State,Rating,Jobs,NIN,Joined,Last Active,Available',
+        ...providers.map(p => `"${p.companyName || ''}","${p.user?.fullName || ''}","${p.user?.email || ''}","${p.user?.phone || 'N/A'}","${p.serviceType || ''}","${p.verificationStatus || 'pending'}","${p.city || ''}","${p.state || ''}","${p.rating || 0}","${p.completedJobs || 0}","${p.nin?.number || 'N/A'}","${p.createdAt ? new Date(p.createdAt).toLocaleDateString() : ''}","${p.lastActive ? new Date(p.lastActive).toLocaleDateString() : 'Never'}","${p.isAvailable ? 'Yes' : 'No'}"`)
       ].join('\n');
       
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', 'attachment; filename=providers-export.csv');
-      res.send(csv);
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename=providers-export-${Date.now()}.csv`);
+      res.send('\uFEFF' + csv);
     } catch (error) { 
+      console.error('Export providers error:', error);
       res.status(500).json({ success: false, message: error.message }); 
     }
   }

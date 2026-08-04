@@ -370,20 +370,27 @@ static async acceptQuote(req, res) {
   }
   // controllers/customerController.js - Add submitReport
 // controllers/customerController.js
+// controllers/customerController.js - Fix submitReport
 static async submitReport(req, res) {
     try {
       const { subject, message, type } = req.body;
       const userId = req.user.id;
       const user = await User.findById(userId);
 
-      await Notification.create({
+      const report = await Notification.create({
         user: userId,
-        text: `📝 Report: ${subject || 'Support request'}`,
+        text: `📝 ${subject || type === 'complaint' ? 'Complaint' : 'Support Request'}: ${message?.substring(0, 100) || 'No details provided'}`,
         kind: 'report',
-        metadata: { message, type, customerEmail: user.email, customerName: user.fullName }
+        metadata: { 
+          fullMessage: message, 
+          type, 
+          customerEmail: user.email, 
+          customerName: user.fullName,
+          submittedAt: new Date()
+        }
       });
 
-      res.json({ success: true, message: 'Report submitted. Our team will review it shortly.' });
+      res.json({ success: true, message: 'Report submitted successfully. Our team will review it shortly.' });
     } catch (error) {
       res.status(500).json({ success: false, message: 'Failed to submit report' });
     }
