@@ -30,6 +30,8 @@ const superAdminOnly = (req, res, next) => {
   next();
 };
 router.get('/admins', superAdminOnly, AdminController.getAdmins);
+// routes/adminRoutes.js
+router.get('/quotes', AdminController.getAllQuotes);
 router.post('/admins', superAdminOnly, AdminController.createAdmin);
 router.delete('/admins/:id', superAdminOnly, AdminController.deleteAdmin);
 

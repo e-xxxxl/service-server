@@ -11,6 +11,8 @@ router.post('/login', AuthController.login);
 router.post('/verify-email/:token', AuthController.verifyEmail);
 router.post('/resend-verification', AuthController.resendVerification);
 router.get('/verify', protect, AuthController.verifyToken);
+// routes/authRoutes.js
+router.put('/update-profile', protect, AuthController.updateProfile);
 
 // Google OAuth Routes
 router.get('/google', (req, res, next) => {

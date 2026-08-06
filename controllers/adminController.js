@@ -261,6 +261,51 @@ static async approveProvider(req, res) {
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
   }
 
+  // controllers/adminController.js - getAllQuotes
+static async getAllQuotes(req, res) {
+    try {
+      const { status } = req.query;
+      const filter = { 'messages.messageType': 'quote' };
+      
+      if (status === 'pending') filter.bookingStatus = 'quote_sent';
+      if (status === 'accepted') filter.bookingStatus = 'payment_pending';
+      if (status === 'confirmed') filter.bookingStatus = 'confirmed';
+      if (status === 'completed') filter.bookingStatus = 'completed';
+
+      const conversations = await Conversation.find(filter)
+        .sort({ lastMessageAt: -1 })
+        .limit(100)
+        .populate('customer', 'fullName email phone')
+        .populate({ path: 'professional', populate: { path: 'user', select: 'fullName email phone' } });
+
+      const quotes = [];
+      conversations.forEach(conv => {
+        conv.messages.forEach(msg => {
+          if (msg.messageType === 'quote' || msg.messageType === 'payment_requested' || msg.messageType === 'payment_confirmed') {
+            quotes.push({
+              conversationId: conv._id,
+              messageId: msg._id,
+              customer: { name: conv.customer?.fullName, email: conv.customer?.email },
+              provider: { name: conv.professional?.companyName, service: conv.professional?.serviceType },
+              quote: msg.quote,
+              payment: msg.payment,
+              booking: msg.booking,
+              status: msg.quote?.status || 'pending',
+              bookingStatus: conv.bookingStatus,
+              amount: msg.quote?.totalAmount || msg.payment?.amount,
+              createdAt: msg.createdAt,
+              updatedAt: conv.lastMessageAt
+            });
+          }
+        });
+      });
+
+      res.json({ success: true, data: quotes.reverse() });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
   // ✅ Export users as CSV
 // controllers/adminController.js - Add these methods
 // controllers/adminController.js - Export methods

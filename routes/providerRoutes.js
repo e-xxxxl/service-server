@@ -56,6 +56,7 @@ router.patch('/availability', ProviderController.updateAvailability);
 // Messages
 router.get('/messages', ProviderController.getMessages);
 router.post('/messages/:customerId', ProviderController.sendMessage);
+router.post('/send-quote/:customerId', ProviderController.sendQuote);
 
 // Jobs
 router.get('/jobs', ProviderController.getJobs);

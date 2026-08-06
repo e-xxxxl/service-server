@@ -302,82 +302,76 @@ static async resubmitVerification(req, res) {
 
   // controllers/providerController.js - Add sendQuote method
 // controllers/providerController.js - Fix sendQuote
+// controllers/providerController.js - sendQuote
+// controllers/providerController.js - FIXED sendQuote
+// controllers/providerController.js - FIXED sendQuote
+// controllers/providerController.js - sendQuote
 static async sendQuote(req, res) {
     try {
       const { customerId } = req.params;
-      const { description, amount, items } = req.body;
+      const { serviceDescription, materials, laborCost, materialCost, additionalFees } = req.body;
       const userId = req.user.id;
 
       const provider = await ServiceProvider.findOne({ user: userId });
       if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
 
-      if (!amount || amount <= 0) {
-        return res.status(400).json({ success: false, message: 'Valid amount is required' });
-      }
+      const totalAmount = (Number(laborCost) || 0) + (Number(materialCost) || 0) + (Number(additionalFees) || 0);
+      if (totalAmount <= 0) return res.status(400).json({ success: false, message: 'Total amount must be greater than zero' });
 
-      let conversation = await Conversation.findOne({ 
-        customer: customerId, 
-        professional: provider._id 
-      });
-
+      let conversation = await Conversation.findOne({ customer: customerId, professional: provider._id });
       if (!conversation) {
-        conversation = await Conversation.create({ 
-          customer: customerId, 
-          professional: provider._id, 
-          messages: [] 
-        });
+        conversation = new Conversation({ customer: customerId, professional: provider._id, messages: [] });
       }
 
-      // Calculate item totals
-      const quoteItems = (items || []).map(item => ({
-        name: item.name,
-        description: item.description || '',
-        quantity: item.quantity || 1,
-        unitPrice: item.unitPrice || 0,
-        total: (item.quantity || 1) * (item.unitPrice || 0)
-      }));
-
-      // Create the quote message
-      const quoteMessage = {
+      // ✅ Create the message object explicitly
+      const newMsg = {
         sender: userId,
         senderModel: 'ServiceProvider',
-        text: `📋 Quote: ${description || 'Service Quote'} - ₦${amount.toLocaleString()}`,
+        text: `📋 Quote from ${provider.companyName}: ${serviceDescription || 'Service'} - ₦${totalAmount.toLocaleString()}`,
         messageType: 'quote',
         quote: {
-          description: description || 'Service Quote',
-          amount: amount,
+          serviceDescription: serviceDescription || '',
+          materials: materials || '',
+          laborCost: Number(laborCost) || 0,
+          materialCost: Number(materialCost) || 0,
+          additionalFees: Number(additionalFees) || 0,
+          totalAmount: totalAmount,
           currency: 'NGN',
-          items: quoteItems,
           validUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
           status: 'pending'
         },
+        read: false,
         createdAt: new Date()
       };
 
-      conversation.messages.push(quoteMessage);
+      console.log('🔍 Pushing message:', JSON.stringify(newMsg, null, 2));
+
+      conversation.messages.push(newMsg);
       conversation.lastMessageAt = new Date();
       conversation.providerUnread = false;
       conversation.customerUnread = true;
-      
-      await conversation.save();
+      conversation.bookingStatus = 'quote_sent';
 
-      // Notify customer
+      const saved = await conversation.save();
+      
+      // ✅ Get the raw saved message
+      const rawMsg = saved.messages[saved.messages.length - 1].toObject();
+      console.log('🔍 Saved message from DB:', JSON.stringify({
+        messageType: rawMsg.messageType,
+        quote: rawMsg.quote,
+        text: rawMsg.text
+      }, null, 2));
+
       await Notification.create({
         user: customerId,
-        text: `💰 You received a quote of ₦${amount.toLocaleString()} from ${provider.companyName || 'a provider'} for: ${description || 'services'}.`,
+        text: `💰 ${provider.companyName} sent you a quote of ₦${totalAmount.toLocaleString()}.`,
         kind: 'action'
       });
 
-      // Return the saved message with its _id
-      const savedMessage = conversation.messages[conversation.messages.length - 1];
-
       res.json({ 
         success: true, 
-        message: 'Quote sent successfully',
-        data: {
-          messageId: savedMessage._id,
-          quote: savedMessage.quote
-        }
+        message: 'Quote sent successfully!',
+        data: { messageId: rawMsg._id, conversationId: saved._id }
       });
     } catch (error) {
       console.error('Send quote error:', error);
@@ -429,42 +423,55 @@ static async getDashboard(req, res) {
 
 // GET /api/provider/messages
 // controllers/providerController.js - getMessages
+// controllers/providerController.js - getMessages
+// controllers/providerController.js - FIXED getMessages
 static async getMessages(req, res) {
     try {
       const userId = req.user.id;
       const provider = await ServiceProvider.findOne({ user: userId });
       if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
 
+      // ✅ Use lean() to get plain objects, then transform
       const conversations = await Conversation.find({ professional: provider._id })
-        .sort({ lastMessageAt: -1 }).populate('customer', 'fullName email');
+        .sort({ lastMessageAt: -1 })
+        .populate('customer', 'fullName email')
+        .lean(); // ✅ Use lean() for plain JS objects
 
       const formattedConversations = conversations.map(conv => ({
         id: conv._id.toString(),
         customerId: conv.customer?._id?.toString(),
         customerName: conv.customer?.fullName || 'Customer',
-        preview: conv.messages[conv.messages.length - 1]?.text || '',
+        preview: conv.messages?.length ? conv.messages[conv.messages.length - 1]?.text || '' : '',
         time: conv.lastMessageAt,
         unread: conv.providerUnread || false,
-        messages: conv.messages.map(m => ({
-          _id: m._id, // ✅ Include _id for quote acceptance
-          id: m._id,
+        // ✅ Map messages and ensure all fields are included
+        messages: (conv.messages || []).map(m => ({
+          _id: m._id?.toString(),
+          id: m._id?.toString(),
           text: m.text || '',
           sender: m.sender?.toString(),
-          senderModel: m.senderModel,
-          messageType: m.messageType || 'text', // ✅ Include messageType
-          quote: m.quote || null, // ✅ Include quote data
-          booking: m.booking || null, // ✅ Include booking data
-          createdAt: m.createdAt,
-          read: m.read
+          senderModel: m.senderModel || 'User',
+          messageType: m.messageType || 'text', // ✅ CRITICAL
+          quote: m.quote || null,               // ✅ CRITICAL
+          payment: m.payment || null,           // ✅ CRITICAL
+          booking: m.booking || null,           // ✅ CRITICAL
+          read: m.read || false,
+          createdAt: m.createdAt || new Date()
         }))
       }));
 
+      console.log('✅ Provider messages:', formattedConversations.map(c => ({
+        id: c.id,
+        msgCount: c.messages.length,
+        types: c.messages.map(m => m.messageType)
+      })));
+
       res.json({ success: true, data: formattedConversations });
     } catch (error) {
+      console.error('Get messages error:', error);
       res.status(500).json({ success: false, message: 'Failed to fetch messages' });
     }
   }
-
 // POST /api/provider/messages/:customerId
 static async sendMessage(req, res) {
   try {

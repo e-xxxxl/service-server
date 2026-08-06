@@ -396,6 +396,57 @@ static async submitReport(req, res) {
     }
   }
 
+  // controllers/customerController.js - confirmPayment
+static async confirmPayment(req, res) {
+    try {
+      const { conversationId, messageId } = req.params;
+      const { paymentReference, paymentMethod } = req.body;
+      const userId = req.user.id;
+
+      const conversation = await Conversation.findOne({ _id: conversationId, customer: userId });
+      if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
+
+      const message = conversation.messages.id(messageId);
+      if (!message) return res.status(404).json({ success: false, message: 'Message not found' });
+
+      // Update payment status
+      message.payment.status = 'paid';
+      message.payment.reference = paymentReference || `PAY-${Date.now()}`;
+      message.payment.method = paymentMethod || 'bank_transfer';
+      message.payment.paidAt = new Date();
+      message.messageType = 'payment_confirmed';
+      message.text = `✅ Payment confirmed! Amount: ₦${message.payment.amount?.toLocaleString()}. Reference: ${message.payment.reference}`;
+
+      // Add booking confirmation
+      conversation.messages.push({
+        sender: userId,
+        senderModel: 'User',
+        text: `🎉 Booking confirmed! Payment of ₦${message.payment.amount?.toLocaleString()} has been received. The provider will begin work shortly.`,
+        messageType: 'payment_confirmed',
+        payment: message.payment,
+        booking: { status: 'confirmed', scheduledDate: new Date() },
+        createdAt: new Date()
+      });
+
+      conversation.bookingStatus = 'confirmed';
+      conversation.lastMessageAt = new Date();
+      conversation.providerUnread = true;
+      await conversation.save();
+
+      // Notify provider
+      await Notification.create({
+        user: conversation.professional,
+        text: `💵 Payment of ₦${message.payment.amount?.toLocaleString()} confirmed! Booking is now active.`,
+        kind: 'success'
+      });
+
+      res.json({ success: true, message: 'Payment confirmed! Booking is now active.' });
+    } catch (error) {
+      console.error('Confirm payment error:', error);
+      res.status(500).json({ success: false, message: 'Failed to confirm payment' });
+    }
+  }
+
   // POST /api/customer/favorites/:professionalId
   static async toggleFavorite(req, res) {
     try {
@@ -559,71 +610,109 @@ static async sendMessage(req, res) {
 
   // Add these methods to customerController.js
 
-// GET /api/customer/messages
-// controllers/customerController.js - getMessages
+// GET /api/customer/messages  – list of conversations
 static async getMessages(req, res) {
-    try {
-      const userId = req.user.id;
-      const conversations = await Conversation.find({ customer: userId })
-        .sort({ lastMessageAt: -1 })
-        .populate({ path: 'professional', model: 'ServiceProvider', populate: { path: 'user', model: 'User', select: 'fullName' } });
+  try {
+    const userId = req.user.id;
 
-      const formattedConversations = conversations.map(conv => ({
-        id: conv._id.toString(),
-        professionalId: conv.professional?._id?.toString(),
-        name: conv.professional?.user?.fullName || conv.professional?.companyName || 'Unknown',
-        companyName: conv.professional?.companyName,
-        trade: conv.professional?.serviceType,
-        lastMessage: conv.messages[conv.messages.length - 1]?.text || '',
-        lastMessageTime: conv.lastMessageAt,
-        unread: conv.customerUnread || false,
-        messageCount: conv.messages.length
-      }));
+    const conversations = await Conversation.find({ customer: userId })
+      .sort({ lastMessageAt: -1 })
+      .populate({
+        path: 'professional',
+        model: 'ServiceProvider',
+        populate: { path: 'user', model: 'User', select: 'fullName' }
+      })
+      .lean();
 
-      res.json({ success: true, data: formattedConversations });
-    } catch (error) {
-      res.status(500).json({ success: false, message: 'Failed to fetch messages' });
-    }
-  }
+    const formatted = conversations
+      .filter(c => c.professional)
+      .map(conv => {
+        const last = conv.messages?.length
+          ? conv.messages[conv.messages.length - 1]
+          : null;
 
-// ✅ Fix getConversation to return full message data
-static async getConversation(req, res) {
-    try {
-      const { conversationId } = req.params;
-      const conversation = await Conversation.findOne({ _id: conversationId, customer: req.user.id })
-        .populate({ path: 'professional', model: 'ServiceProvider', populate: { path: 'user', model: 'User', select: 'fullName' } });
-
-      if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
-
-      conversation.customerUnread = false;
-      await conversation.save();
-
-      res.json({
-        success: true,
-        data: {
-          id: conversation._id.toString(),
-          professionalId: conversation.professional?._id?.toString(),
-          name: conversation.professional?.user?.fullName || conversation.professional?.companyName,
-          companyName: conversation.professional?.companyName,
-          messages: conversation.messages.map(m => ({
-            _id: m._id, // ✅ Critical for quote acceptance
-            id: m._id,
-            text: m.text || '',
-            sender: m.sender?.toString(),
-            senderModel: m.senderModel,
-            messageType: m.messageType || 'text', // ✅ Include messageType
-            quote: m.quote || null, // ✅ Include quote
-            booking: m.booking || null, // ✅ Include booking
-            createdAt: m.createdAt,
-            read: m.read
-          }))
-        }
+        return {
+          id: conv._id.toString(),
+          professionalId: conv.professional._id.toString(),
+          name: conv.professional.user?.fullName || conv.professional.companyName || 'Unknown',
+          trade: conv.professional.serviceType || 'General Service',
+          lastMessage: last?.text || '',
+          lastMessageTime: conv.lastMessageAt,
+          preview: last?.text || '',
+          time: conv.lastMessageAt,
+          unread: conv.customerUnread || false
+        };
       });
-    } catch (error) {
-      res.status(500).json({ success: false, message: 'Failed to fetch conversation' });
-    }
-  }
 
+    res.json({ success: true, data: formatted });
+  } catch (error) {
+    console.error('Customer getMessages error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch messages' });
+  }
+}
+
+// GET /api/customer/messages/:conversationId  – full messages (quotes included)
+static async getConversation(req, res) {
+  try {
+    const { conversationId } = req.params;
+
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      customer: req.user.id
+    })
+      .populate({
+        path: 'professional',
+        model: 'ServiceProvider',
+        populate: { path: 'user', model: 'User', select: 'fullName' }
+      })
+      .lean();   // plain objects – no Mongoose stripping
+
+    if (!conversation) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+
+    // mark read (needs a separate non-lean update)
+    await Conversation.updateOne(
+      { _id: conversationId, customer: req.user.id },
+      { $set: { customerUnread: false } }
+    );
+
+    const messages = (conversation.messages || []).map(msg => ({
+      _id: msg._id?.toString(),
+      id: msg._id?.toString(),
+      text: msg.text || '',
+      sender: msg.sender?.toString?.() || String(msg.sender),
+      senderModel: msg.senderModel,
+      messageType: msg.messageType || 'text',   // ← must be present
+      quote: msg.quote || null,                 // ← must be present
+      payment: msg.payment || null,
+      booking: msg.booking || null,
+      read: msg.read || false,
+      createdAt: msg.createdAt
+    }));
+
+    console.log('📨 CUSTOMER getConversation →', messages.map(m => ({
+      type: m.messageType,
+      hasQuote: !!m.quote,
+      text: (m.text || '').substring(0, 40)
+    })));
+
+    res.json({
+      success: true,
+      data: {
+        id: conversation._id.toString(),
+        professionalId: conversation.professional?._id?.toString(),
+        name: conversation.professional?.user?.fullName || conversation.professional?.companyName,
+        companyName: conversation.professional?.companyName,
+        trade: conversation.professional?.serviceType,
+        messages
+      }
+    });
+  } catch (error) {
+    console.error('Get conversation error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch conversation' });
+  }
+}
   // GET /api/customer/notifications
   static async getNotifications(req, res) {
     try {
@@ -646,51 +735,47 @@ static async getConversation(req, res) {
     }
   }
 
-  // GET /api/customer/messages/:conversationId
-  static async getConversation(req, res) {
+
+  // controllers/customerController.js - rejectQuote
+static async rejectQuote(req, res) {
     try {
-      const { conversationId } = req.params;
-      
-      const conversation = await Conversation.findOne({
-        _id: conversationId,
-        customer: req.user.id
-      }).populate({
-        path: 'professional',
-        model: 'ServiceProvider',
-        populate: {
-          path: 'user',
-          model: 'User',
-          select: 'fullName'
-        }
+      const { conversationId, messageId } = req.params;
+      const { reason } = req.body;
+      const userId = req.user.id;
+
+      const conversation = await Conversation.findOne({ _id: conversationId, customer: userId });
+      if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
+
+      const message = conversation.messages.id(messageId);
+      if (!message || message.messageType !== 'quote') return res.status(404).json({ success: false, message: 'Quote not found' });
+
+      message.quote.status = 'rejected';
+      message.quote.rejectedAt = new Date();
+      message.quote.rejectionReason = reason || 'No reason provided';
+
+      conversation.messages.push({
+        sender: userId,
+        senderModel: 'User',
+        text: `❌ Quote declined. Reason: ${reason || 'Not specified'}`,
+        messageType: 'quote_rejected',
+        quote: message.quote,
+        createdAt: new Date()
       });
 
-      if (!conversation) {
-        return res.status(404).json({ success: false, message: 'Conversation not found' });
-      }
-
-      // Mark as read
-      conversation.customerUnread = false;
+      conversation.lastMessageAt = new Date();
+      conversation.bookingStatus = 'cancelled';
+      conversation.providerUnread = true;
       await conversation.save();
 
-      res.json({
-        success: true,
-        data: {
-          id: conversation._id.toString(),
-          professionalId: conversation.professional?._id.toString(),
-          name: conversation.professional?.user?.fullName || conversation.professional?.companyName,
-          companyName: conversation.professional?.companyName,
-          messages: conversation.messages.map(msg => ({
-            id: msg._id.toString(),
-            text: msg.text,
-            sender: msg.sender.toString(),
-            senderModel: msg.senderModel,
-            time: msg.createdAt,
-            read: msg.read
-          }))
-        }
+      await Notification.create({
+        user: conversation.professional,
+        text: `❌ A customer declined your quote of ₦${message.quote.totalAmount?.toLocaleString()}. Reason: ${reason || 'Not specified'}`,
+        kind: 'action'
       });
+
+      res.json({ success: true, message: 'Quote declined.' });
     } catch (error) {
-      res.status(500).json({ success: false, message: 'Failed to fetch conversation' });
+      res.status(500).json({ success: false, message: 'Failed to reject quote' });
     }
   }
 

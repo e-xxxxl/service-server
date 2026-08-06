@@ -1,6 +1,5 @@
-// models/Conversation.js - Add quote field to messages
+// models/Conversation.js - Add quote and booking fields
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
 
 const conversationSchema = new mongoose.Schema({
   customer: {
@@ -14,78 +13,52 @@ const conversationSchema = new mongoose.Schema({
     required: true
   },
   messages: [{
-    sender: {
-      type: mongoose.Schema.Types.ObjectId,
-      required: true
-    },
-    senderModel: {
-      type: String,
-      enum: ['User', 'ServiceProvider'],
-      required: true
-    },
-    text: {
-      type: String,
-      default: ''
-    },
-    // ✅ Quote/Built-in message types
+    sender: { type: mongoose.Schema.Types.ObjectId, required: true },
+    senderModel: { type: String, enum: ['User', 'ServiceProvider'], required: true },
+    text: { type: String, default: '' },
     messageType: {
       type: String,
-      enum: ['text', 'quote', 'booking_confirmed', 'payment_requested', 'job_completed'],
+      enum: ['text', 'quote', 'quote_accepted', 'quote_rejected', 'payment_requested', 'payment_confirmed', 'job_completed'],
       default: 'text'
     },
-    // ✅ Quote data
     quote: {
-      description: String,
-      amount: Number,
+      serviceDescription: String,
+      materials: String,
+      laborCost: Number,
+      materialCost: Number,
+      additionalFees: Number,
+      totalAmount: Number,
       currency: { type: String, default: 'NGN' },
-      items: [{
-        name: String,
-        description: String,
-        quantity: { type: Number, default: 1 },
-        unitPrice: Number,
-        total: Number
-      }],
-      validUntil: Date,
-      status: {
-        type: String,
-        enum: ['pending', 'accepted', 'rejected', 'expired'],
-        default: 'pending'
-      },
+      validUntil: { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
+      status: { type: String, enum: ['pending', 'accepted', 'rejected', 'expired'], default: 'pending' },
       acceptedAt: Date,
-      rejectedAt: Date
+      rejectedAt: Date,
+      rejectionReason: String
     },
-    // ✅ Booking/Payment data
-    booking: {
-      status: {
-        type: String,
-        enum: ['pending', 'confirmed', 'in_progress', 'completed', 'cancelled'],
-        default: 'pending'
-      },
+    payment: {
+      status: { type: String, enum: ['unpaid', 'paid', 'refunded'], default: 'unpaid' },
       amount: Number,
-      paymentMethod: String,
-      paymentStatus: {
-        type: String,
-        enum: ['unpaid', 'paid', 'refunded'],
-        default: 'unpaid'
-      },
+      reference: String,
+      method: String,
+      paidAt: Date
+    },
+    booking: {
+      status: { type: String, enum: ['pending', 'confirmed', 'in_progress', 'completed', 'cancelled'], default: 'pending' },
       scheduledDate: Date,
-      completedAt: Date
+      completedAt: Date,
+      notes: String
     },
-    read: {
-      type: Boolean,
-      default: false
-    },
-    createdAt: {
-      type: Date,
-      default: Date.now
-    }
+    read: { type: Boolean, default: false },
+    createdAt: { type: Date, default: Date.now }
   }],
-  lastMessageAt: {
-    type: Date,
-    default: Date.now
-  },
+  lastMessageAt: { type: Date, default: Date.now },
   customerUnread: { type: Boolean, default: false },
-  providerUnread: { type: Boolean, default: false }
+  providerUnread: { type: Boolean, default: false },
+  bookingStatus: {
+    type: String,
+    enum: ['none', 'quote_sent', 'quote_accepted', 'payment_pending', 'confirmed', 'in_progress', 'completed', 'cancelled'],
+    default: 'none'
+  }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Conversation', conversationSchema);

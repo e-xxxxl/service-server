@@ -28,7 +28,11 @@ router.get('/notifications', CustomerController.getNotifications);
 router.patch('/notifications/:id/read', CustomerController.markNotificationRead);
 // routes/customerRoutes.js - Add report route
 router.post('/report', CustomerController.submitReport);
+
 router.post('/accept-quote/:conversationId/:messageId', CustomerController.acceptQuote);
+router.post('/reject-quote/:conversationId/:messageId', CustomerController.rejectQuote);
+router.post('/confirm-payment/:conversationId/:messageId', CustomerController.confirmPayment);
+
 // routes/customerRoutes.js
 router.post('/report', CustomerController.submitReport);
 
