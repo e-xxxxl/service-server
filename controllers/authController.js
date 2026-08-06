@@ -95,6 +95,21 @@ static async signup(req, res) {
     }
   }
 
+  // controllers/authController.js
+static async updateProfile(req, res) {
+    try {
+      const { fullName, phone, state, city } = req.body;
+      const user = await User.findByIdAndUpdate(
+        req.user.id,
+        { $set: { fullName, phone } },
+        { new: true }
+      );
+      res.json({ success: true, message: 'Profile updated', data: user });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
   static async login(req, res) {
     try {
       const { email, password } = req.body;
