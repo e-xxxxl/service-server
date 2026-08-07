@@ -1,4 +1,4 @@
-// index.js - Updated
+// index.js - Updated with scheduler
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
@@ -11,9 +11,10 @@ const { initializeSocket } = require('./socket');
 const authRoutes = require('./routes/authRoutes');
 const customerRoutes = require('./routes/customerRoutes');
 const providerRoutes = require('./routes/providerRoutes');
-
-// index.js - Add this line
 const adminRoutes = require('./routes/adminRoutes');
+
+// ✅ Import scheduler
+const { scheduleReminderEmails } = require('./services/schedulerService');
 
 const app = express();
 const server = http.createServer(app);
@@ -61,9 +62,14 @@ app.use((err, req, res, next) => {
 
 const startServer = async () => {
   await connectDB();
+  
+  // ✅ Start the reminder email scheduler
+  scheduleReminderEmails();
+  
   server.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`🔌 Socket.io ready for connections`);
+    console.log(`📧 Reminder emails and admin notifications active`);
   });
 };
 

@@ -5,10 +5,13 @@ const JWTService = require('../config/jwt');
 const crypto = require('crypto');
 const emailService = require('../services/emailService');
 const passport = require('../config/passport');
+const { notifyAdminsOnSignup } = require('../services/schedulerService');
 
 class AuthController {
 
 // controllers/authController.js - Add email validation
+
+
 static async signup(req, res) {
     try {
       const { fullName, email, password, accountType = 'customer', phone, companyName, serviceType, state, city } = req.body;
@@ -78,6 +81,11 @@ static async signup(req, res) {
 
       // Send verification email
       await emailService.sendVerificationEmail(user, verificationToken);
+
+      // ✅ NOTIFY ADMINS ABOUT NEW SIGNUP (non-blocking)
+      notifyAdminsOnSignup(user, accountType).catch(err => {
+        console.error('Failed to send admin notification:', err.message);
+      });
 
       res.status(201).json({
         success: true,

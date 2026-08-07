@@ -91,6 +91,9 @@ const serviceProviderSchema = new mongoose.Schema({
   completedJobs: { type: Number, default: 0 },
   isAvailable: { type: Boolean, default: true },
   profileCompletionScore: { type: Number, default: 0 },
+  // Add inside serviceProviderSchema (near the other fields)
+reminderSent1hr: { type: Boolean, default: false },
+reminderSent24hr: { type: Boolean, default: false },
   
   // Last active
   lastActive: { type: Date, default: Date.now }

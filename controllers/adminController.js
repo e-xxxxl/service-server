@@ -306,6 +306,115 @@ static async getAllQuotes(req, res) {
     }
   }
 
+  // controllers/adminController.js - ADD THESE NEW METHODS
+
+// ✅ Update User (Super Admin Only)
+static async updateUser(req, res) {
+    try {
+      // Only super admin can edit users
+      if (req.user.role !== 'super_admin') {
+        return res.status(403).json({ success: false, message: 'Super admin only' });
+      }
+      
+      const { fullName, email, phone, accountType, isActive } = req.body;
+      
+      // Check if email already exists (but not for this user)
+      if (email) {
+        const existingUser = await User.findOne({ 
+          email: email.toLowerCase(), 
+          _id: { $ne: req.params.id } 
+        });
+        if (existingUser) {
+          return res.status(409).json({ success: false, message: 'Email already in use' });
+        }
+      }
+      
+      const updateData = {};
+      if (fullName !== undefined) updateData.fullName = fullName;
+      if (email !== undefined) updateData.email = email.toLowerCase();
+      if (phone !== undefined) updateData.phone = phone;
+      if (accountType !== undefined) updateData.accountType = accountType;
+      if (isActive !== undefined) updateData.isActive = isActive;
+      
+      const user = await User.findByIdAndUpdate(
+        req.params.id,
+        { $set: updateData },
+        { new: true, runValidators: true }
+      );
+      
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      
+      res.json({ success: true, message: 'User updated successfully', data: user });
+    } catch (error) {
+      console.error('Update user error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  // ✅ Update Provider (Super Admin Only)
+  static async updateProvider(req, res) {
+    try {
+      // Only super admin can edit providers fully
+      if (req.user.role !== 'super_admin') {
+        return res.status(403).json({ success: false, message: 'Super admin only' });
+      }
+      
+      const { 
+        companyName, serviceType, city, state, businessDescription,
+        verificationStatus, isVisible, isAvailable,
+        phone, email, fullName, yearsOfExperience, teamSize, completedJobs, rating
+      } = req.body;
+      
+      const provider = await ServiceProvider.findById(req.params.id);
+      if (!provider) {
+        return res.status(404).json({ success: false, message: 'Provider not found' });
+      }
+      
+      // Update provider fields
+      if (companyName !== undefined) provider.companyName = companyName;
+      if (serviceType !== undefined) provider.serviceType = serviceType;
+      if (city !== undefined) provider.city = city;
+      if (state !== undefined) provider.state = state;
+      if (businessDescription !== undefined) provider.businessDescription = businessDescription;
+      if (verificationStatus !== undefined) {
+        provider.verificationStatus = verificationStatus;
+        if (verificationStatus === 'approved') {
+          provider.isVisible = true;
+          provider.verifiedAt = new Date();
+        }
+      }
+      if (isVisible !== undefined) provider.isVisible = isVisible;
+      if (isAvailable !== undefined) provider.isAvailable = isAvailable;
+      if (yearsOfExperience !== undefined) provider.yearsOfExperience = yearsOfExperience;
+      if (teamSize !== undefined) provider.teamSize = teamSize;
+      if (completedJobs !== undefined) provider.completedJobs = completedJobs;
+      if (rating !== undefined) provider.rating = rating;
+      
+      await provider.save();
+      
+      // Also update user info if provided
+      if (phone || email || fullName) {
+        const user = await User.findById(provider.user);
+        if (user) {
+          if (fullName) user.fullName = fullName;
+          if (email) user.email = email.toLowerCase();
+          if (phone) user.phone = phone;
+          await user.save();
+        }
+      }
+      
+      const updatedProvider = await ServiceProvider.findById(req.params.id)
+        .populate('user', 'fullName email phone');
+      
+      res.json({ success: true, message: 'Provider updated successfully', data: updatedProvider });
+    } catch (error) {
+      console.error('Update provider error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
   // ✅ Export users as CSV
 // controllers/adminController.js - Add these methods
 // controllers/adminController.js - Export methods

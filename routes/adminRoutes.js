@@ -34,5 +34,12 @@ router.get('/admins', superAdminOnly, AdminController.getAdmins);
 router.get('/quotes', AdminController.getAllQuotes);
 router.post('/admins', superAdminOnly, AdminController.createAdmin);
 router.delete('/admins/:id', superAdminOnly, AdminController.deleteAdmin);
+// routes/adminRoutes.js - ADD THESE ROUTES
+
+// Update user (super admin only)
+router.put('/users/:id', superAdminOnly, AdminController.updateUser);
+
+// Update provider (super admin only)
+router.put('/providers/:id/update', superAdminOnly, AdminController.updateProvider);
 
 module.exports = router;
