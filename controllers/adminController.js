@@ -213,32 +213,75 @@ static async approveProvider(req, res) {
   }
 
   // ✅ Reject provider
-  static async rejectProvider(req, res) {
+// controllers/adminController.js - FIXED rejectProvider
+
+static async rejectProvider(req, res) {
     try {
       const { reason } = req.body;
-      if (!reason?.trim()) return res.status(400).json({ success: false, message: 'Rejection reason is required' });
+      const { id } = req.params;
+      
+      // ✅ Validate ID format
+      if (!id || !id.match(/^[0-9a-fA-F]{24}$/)) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid provider ID format' 
+        });
+      }
+      
+      if (!reason?.trim()) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Rejection reason is required' 
+        });
+      }
 
       const provider = await ServiceProvider.findByIdAndUpdate(
-        req.params.id,
-        { $set: { verificationStatus: 'rejected', rejectionReason: reason.trim(), rejectionDate: new Date(), isVisible: false } },
+        id,
+        { 
+          $set: { 
+            verificationStatus: 'rejected', 
+            rejectionReason: reason.trim(), 
+            rejectionDate: new Date(), 
+            isVisible: false 
+          } 
+        },
         { new: true }
       ).populate('user', 'email fullName');
 
-      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+      if (!provider) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Provider not found' 
+        });
+      }
 
+      // Create notification
       await Notification.create({
         user: provider.user._id,
         text: `❌ Your profile was not approved. Reason: ${reason}. You can update and resubmit.`,
         kind: 'action'
       });
 
+      // Try sending email (non-blocking)
       try {
         const emailService = require('../services/emailService');
         await emailService.sendRejectionEmail(provider.user, provider, reason);
-      } catch (e) { console.error('Email failed:', e.message); }
+      } catch (e) { 
+        console.error('Rejection email failed:', e.message); 
+      }
 
-      res.json({ success: true, message: 'Provider rejected', data: provider });
-    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+      res.json({ 
+        success: true, 
+        message: 'Provider rejected', 
+        data: provider 
+      });
+    } catch (error) {
+      console.error('Reject provider error:', error);
+      res.status(500).json({ 
+        success: false, 
+        message: error.message 
+      });
+    }
   }
 
   // ✅ Toggle user status
