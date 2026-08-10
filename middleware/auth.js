@@ -20,21 +20,14 @@ const protect = async (req, res, next) => {
       const decoded = JWTService.verifyToken(token);
       const userId = decoded.id || decoded.userId;
 
-      console.log('Protect middleware - decoded:', {
-        id: decoded.id,
-        accountType: decoded.accountType,
-        email: decoded.email
-      });
-
       // Check if it's an admin token
       if (decoded.accountType === 'admin') {
         const admin = await Admin.findById(userId);
-        console.log('Admin lookup result:', admin ? 'Found' : 'Not found');
-        
+
         if (!admin) {
           return res.status(401).json({ success: false, message: 'Admin not found' });
         }
-        
+
         req.user = {
           id: admin._id,
           email: admin.email,
@@ -42,8 +35,7 @@ const protect = async (req, res, next) => {
           fullName: admin.fullName,
           role: admin.role
         };
-        
-        console.log('Admin user set on request:', req.user);
+
         return next();
       }
 
@@ -87,37 +79,25 @@ const protect = async (req, res, next) => {
 // middleware/auth.js - Updated authorize function
 const authorize = (...roles) => {
   return (req, res, next) => {
-    console.log('Authorize check:', {
-      user: req.user ? {
-        id: req.user.id,
-        accountType: req.user.accountType,
-        email: req.user.email
-      } : 'NO USER',
-      requiredRoles: roles
-    });
-
     if (!req.user) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'User not authenticated - no user in request' 
+      return res.status(401).json({
+        success: false,
+        message: 'User not authenticated - no user in request'
       });
     }
-    
+
     // Allow admin to access any route
     if (req.user.accountType === 'admin') {
-      console.log('Admin access granted');
       return next();
     }
-    
+
     if (!roles.includes(req.user.accountType)) {
-      console.log('Access denied - wrong role:', req.user.accountType);
-      return res.status(403).json({ 
-        success: false, 
-        message: `Access denied. Required role: ${roles.join(' or ')}. Your role: ${req.user.accountType}` 
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. Required role: ${roles.join(' or ')}. Your role: ${req.user.accountType}`
       });
     }
-    
-    console.log('Access granted for role:', req.user.accountType);
+
     next();
   };
 };

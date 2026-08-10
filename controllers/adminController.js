@@ -5,6 +5,7 @@ const ServiceProvider = require('../models/ServiceProvider');
 const Conversation = require('../models/Conversation');
 const Notification = require('../models/Notification');
 const JWTService = require('../config/jwt');
+const { notifyUser } = require('../services/notificationService');
 
 class AdminController {
 
@@ -188,8 +189,7 @@ static async approveProvider(req, res) {
       if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
 
       // Create notification
-      await Notification.create({
-        user: provider.user._id,
+      await notifyUser(provider.user._id, {
         text: '🎉 Congratulations! Your profile has been approved and is now visible to customers.',
         kind: 'success'
       });
@@ -256,8 +256,7 @@ static async rejectProvider(req, res) {
       }
 
       // Create notification
-      await Notification.create({
-        user: provider.user._id,
+      await notifyUser(provider.user._id, {
         text: `❌ Your profile was not approved. Reason: ${reason}. You can update and resubmit.`,
         kind: 'action'
       });

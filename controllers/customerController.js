@@ -4,6 +4,8 @@ const User = require('../models/User');
 const Conversation = require('../models/Conversation');
 const Notification = require('../models/Notification');
 const Favorite = require('../models/Favorite');
+const { notifyUser } = require('../services/notificationService');
+const { emitNewMessage } = require('../socket');
 
 class CustomerController {
   // GET /api/customer/dashboard
@@ -22,7 +24,7 @@ class CustomerController {
             populate: {
               path: 'user',
               model: 'User',
-              select: 'fullName email phone'
+              select: 'fullName' // never pull email/phone into a dashboard payload
             }
           }),
         Notification.find({ user: userId }).sort({ createdAt: -1 }).limit(20),
@@ -132,42 +134,45 @@ const recentPros = recentConvos
 static async searchProfessionals(req, res) {
     try {
       const { category, state, city, page = 1, limit = 20 } = req.query;
-      
-      const filter = { 
+
+      const filter = {
         isAvailable: true,
         isVisible: true,
         verificationStatus: 'approved'
       };
-      
+
       if (category && category.trim()) {
         filter.serviceType = { $regex: category.trim(), $options: 'i' };
       }
-      
+
+      // Exact match against the canonical state/LGA values (normalized at
+      // write time), not a regex — "Lagos" vs "lagos state" style drift is
+      // prevented by validating on save, not by fuzzy-matching on read.
       const locationConditions = [];
       if (state && state.trim()) {
         locationConditions.push(
-          { state: { $regex: state.trim(), $options: 'i' } },
-          { 'serviceArea.state': { $regex: state.trim(), $options: 'i' } },
-          { 'businessAddress.state': { $regex: state.trim(), $options: 'i' } }
+          { state: state.trim() },
+          { 'serviceArea.state': state.trim() },
+          { 'businessAddress.state': state.trim() }
         );
       }
       if (city && city.trim()) {
         locationConditions.push(
-          { city: { $regex: city.trim(), $options: 'i' } },
-          { 'serviceArea.city': { $regex: city.trim(), $options: 'i' } },
-          { 'businessAddress.city': { $regex: city.trim(), $options: 'i' } }
+          { city: city.trim() },
+          { 'serviceArea.city': city.trim() },
+          { 'businessAddress.city': city.trim() }
         );
       }
       if (locationConditions.length > 0) {
         if (filter.$and) filter.$and.push({ $or: locationConditions });
         else filter.$and = [{ $or: locationConditions }];
       }
-      
+
       const skip = (parseInt(page) - 1) * parseInt(limit);
-      
+
       const [providers, total] = await Promise.all([
         ServiceProvider.find(filter)
-          .populate('user', 'fullName email phone')
+          .populate('user', 'fullName') // never populate email/phone into public search results
           .sort({ rating: -1, completedJobs: -1, verifiedAt: -1 })
           .skip(skip).limit(parseInt(limit)),
         ServiceProvider.countDocuments(filter)
@@ -209,8 +214,9 @@ static async searchProfessionals(req, res) {
         teamSize: provider.teamSize || 1,
         completedJobs: provider.completedJobs || 0,
         isFavorited: favoriteIds.has(provider._id.toString()),
-        phone: provider.user?.phone || '',
-        email: provider.user?.email || '',
+        // Contact info is intentionally never included here — it stays hidden
+        // until a payment unlocks it on a specific conversation (see
+        // GET /api/customer/messages/:conversationId/contact).
         lastActive: provider.lastActive || null
       }));
       
@@ -229,8 +235,8 @@ static async searchProfessionals(req, res) {
 static async getProviderProfile(req, res) {
     try {
       const provider = await ServiceProvider.findById(req.params.id)
-        .populate('user', 'fullName email phone');
-      
+        .populate('user', 'fullName'); // never populate email/phone into a public profile response
+
       if (!provider) {
         return res.status(404).json({ success: false, message: 'Provider not found' });
       }
@@ -270,9 +276,9 @@ static async getProviderProfile(req, res) {
           businessAddress: provider.businessAddress || {},
           isAvailable: provider.isAvailable,
           lastActive: provider.lastActive || null,
-          isFavorited,
-          phone: provider.user?.phone || '',
-          email: provider.user?.email || ''
+          isFavorited
+          // Contact info is intentionally omitted — see the contact-unlock
+          // endpoint on the conversation once a payment has gone through.
         }
       });
     } catch (error) {
@@ -316,51 +322,48 @@ static async acceptQuote(req, res) {
         return res.status(400).json({ success: false, message: 'This quote is no longer available' });
       }
 
-      // Update quote status
+      const amount = message.quote.totalAmount;
+
+      // Accepting a quote does NOT mark it paid - that only happens once
+      // Paystack confirms payment server-side (see paymentController).
       message.quote.status = 'accepted';
       message.quote.acceptedAt = new Date();
 
-      // Create booking
-      const bookingData = {
-        status: 'confirmed',
-        amount: message.quote.amount,
-        paymentStatus: 'paid',
-        paymentMethod: 'platform',
-        scheduledDate: new Date()
-      };
-
-      message.booking = bookingData;
-
-      // Add confirmation message
       conversation.messages.push({
         sender: userId,
         senderModel: 'User',
-        text: `✅ Booking confirmed! Amount: ₦${message.quote.amount.toLocaleString()}`,
-        messageType: 'booking_confirmed',
+        text: `✅ Quote accepted. Proceed to payment to activate this job.`,
+        messageType: 'quote_accepted',
         quote: message.quote,
-        booking: bookingData,
         createdAt: new Date()
       });
 
       conversation.lastMessageAt = new Date();
+      conversation.bookingStatus = 'pending_payment';
       conversation.customerUnread = false;
       conversation.providerUnread = true;
-      
+
       await conversation.save();
 
-      // Notify provider
-      await Notification.create({
-        user: conversation.professional,
-        text: `🎉 Great news! A customer has accepted your quote of ₦${message.quote.amount.toLocaleString()} and booked your service.`,
-        kind: 'success'
-      });
+      // Find the ServiceProvider's linked User to notify them.
+      const provider = await ServiceProvider.findById(conversation.professional);
+      if (provider) {
+        await notifyUser(provider.user, {
+          text: `🎉 A customer accepted your quote of ₦${amount.toLocaleString()}. Awaiting payment.`,
+          kind: 'success',
+          relatedConversation: conversation._id
+        });
+      }
 
-      res.json({ 
-        success: true, 
-        message: 'Booking confirmed successfully!',
+      res.json({
+        success: true,
+        message: 'Quote accepted. Proceed to payment to activate this job.',
         data: {
           quote: message.quote,
-          booking: bookingData
+          paymentRequired: true,
+          amount,
+          conversationId: conversation._id,
+          messageId: message._id
         }
       });
     } catch (error) {
@@ -375,75 +378,15 @@ static async submitReport(req, res) {
     try {
       const { subject, message, type } = req.body;
       const userId = req.user.id;
-      const user = await User.findById(userId);
 
-      const report = await Notification.create({
-        user: userId,
+      await notifyUser(userId, {
         text: `📝 ${subject || type === 'complaint' ? 'Complaint' : 'Support Request'}: ${message?.substring(0, 100) || 'No details provided'}`,
-        kind: 'report',
-        metadata: { 
-          fullMessage: message, 
-          type, 
-          customerEmail: user.email, 
-          customerName: user.fullName,
-          submittedAt: new Date()
-        }
+        kind: 'report'
       });
 
       res.json({ success: true, message: 'Report submitted successfully. Our team will review it shortly.' });
     } catch (error) {
       res.status(500).json({ success: false, message: 'Failed to submit report' });
-    }
-  }
-
-  // controllers/customerController.js - confirmPayment
-static async confirmPayment(req, res) {
-    try {
-      const { conversationId, messageId } = req.params;
-      const { paymentReference, paymentMethod } = req.body;
-      const userId = req.user.id;
-
-      const conversation = await Conversation.findOne({ _id: conversationId, customer: userId });
-      if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
-
-      const message = conversation.messages.id(messageId);
-      if (!message) return res.status(404).json({ success: false, message: 'Message not found' });
-
-      // Update payment status
-      message.payment.status = 'paid';
-      message.payment.reference = paymentReference || `PAY-${Date.now()}`;
-      message.payment.method = paymentMethod || 'bank_transfer';
-      message.payment.paidAt = new Date();
-      message.messageType = 'payment_confirmed';
-      message.text = `✅ Payment confirmed! Amount: ₦${message.payment.amount?.toLocaleString()}. Reference: ${message.payment.reference}`;
-
-      // Add booking confirmation
-      conversation.messages.push({
-        sender: userId,
-        senderModel: 'User',
-        text: `🎉 Booking confirmed! Payment of ₦${message.payment.amount?.toLocaleString()} has been received. The provider will begin work shortly.`,
-        messageType: 'payment_confirmed',
-        payment: message.payment,
-        booking: { status: 'confirmed', scheduledDate: new Date() },
-        createdAt: new Date()
-      });
-
-      conversation.bookingStatus = 'confirmed';
-      conversation.lastMessageAt = new Date();
-      conversation.providerUnread = true;
-      await conversation.save();
-
-      // Notify provider
-      await Notification.create({
-        user: conversation.professional,
-        text: `💵 Payment of ₦${message.payment.amount?.toLocaleString()} confirmed! Booking is now active.`,
-        kind: 'success'
-      });
-
-      res.json({ success: true, message: 'Payment confirmed! Booking is now active.' });
-    } catch (error) {
-      console.error('Confirm payment error:', error);
-      res.status(500).json({ success: false, message: 'Failed to confirm payment' });
     }
   }
 
@@ -550,7 +493,7 @@ static async sendMessage(req, res) {
       }
 
       // Verify the professional exists
-      const professional = await ServiceProvider.findById(professionalId);
+      const professional = await ServiceProvider.findById(professionalId).select('user companyName');
       if (!professional) {
         return res.status(404).json({
           success: false,
@@ -585,12 +528,22 @@ static async sendMessage(req, res) {
 
       await conversation.save();
 
+      const savedMessage = conversation.messages[conversation.messages.length - 1].toObject();
+      if (professional.user) {
+        emitNewMessage({
+          conversationId: conversation._id,
+          recipientUserId: professional.user,
+          message: { ...savedMessage, senderName: req.user.fullName },
+          senderName: req.user.fullName
+        });
+      }
+
       res.json({
         success: true,
         message: 'Message sent successfully',
         data: {
           conversationId: conversation._id,
-          messageId: conversation.messages[conversation.messages.length - 1]._id,
+          messageId: savedMessage._id,
           text: text.trim(),
           time: new Date()
         }
@@ -640,7 +593,8 @@ static async getMessages(req, res) {
           lastMessageTime: conv.lastMessageAt,
           preview: last?.text || '',
           time: conv.lastMessageAt,
-          unread: conv.customerUnread || false
+          unread: conv.customerUnread || false,
+          contactUnlocked: conv.contactUnlocked || false
         };
       });
 
@@ -705,6 +659,7 @@ static async getConversation(req, res) {
         name: conversation.professional?.user?.fullName || conversation.professional?.companyName,
         companyName: conversation.professional?.companyName,
         trade: conversation.professional?.serviceType,
+        contactUnlocked: conversation.contactUnlocked || false,
         messages
       }
     });
@@ -713,6 +668,46 @@ static async getConversation(req, res) {
     res.status(500).json({ success: false, message: 'Failed to fetch conversation' });
   }
 }
+  // GET /api/customer/messages/:conversationId/contact
+  // Only returns the provider's phone/email once a payment on this
+  // conversation has unlocked contact info server-side (see paymentController).
+  static async getConversationContact(req, res) {
+    try {
+      const { conversationId } = req.params;
+      const conversation = await Conversation.findOne({
+        _id: conversationId,
+        customer: req.user.id
+      }).populate({
+        path: 'professional',
+        model: 'ServiceProvider',
+        populate: { path: 'user', model: 'User', select: 'fullName email phone' }
+      });
+
+      if (!conversation) {
+        return res.status(404).json({ success: false, message: 'Conversation not found' });
+      }
+
+      if (!conversation.contactUnlocked) {
+        return res.status(403).json({
+          success: false,
+          message: 'Contact information unlocks once a quote on this conversation has been paid for.'
+        });
+      }
+
+      res.json({
+        success: true,
+        data: {
+          name: conversation.professional?.user?.fullName || conversation.professional?.companyName,
+          phone: conversation.professional?.user?.phone || '',
+          email: conversation.professional?.user?.email || ''
+        }
+      });
+    } catch (error) {
+      console.error('Get conversation contact error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load contact information' });
+    }
+  }
+
   // GET /api/customer/notifications
   static async getNotifications(req, res) {
     try {
@@ -767,83 +762,20 @@ static async rejectQuote(req, res) {
       conversation.providerUnread = true;
       await conversation.save();
 
-      await Notification.create({
-        user: conversation.professional,
-        text: `❌ A customer declined your quote of ₦${message.quote.totalAmount?.toLocaleString()}. Reason: ${reason || 'Not specified'}`,
-        kind: 'action'
-      });
+      // conversation.professional is a ServiceProvider id, not a User id -
+      // Notification.user references User, so resolve it first.
+      const provider = await ServiceProvider.findById(conversation.professional);
+      if (provider) {
+        await notifyUser(provider.user, {
+          text: `❌ A customer declined your quote of ₦${message.quote.totalAmount?.toLocaleString()}. Reason: ${reason || 'Not specified'}`,
+          kind: 'action',
+          relatedConversation: conversation._id
+        });
+      }
 
       res.json({ success: true, message: 'Quote declined.' });
     } catch (error) {
       res.status(500).json({ success: false, message: 'Failed to reject quote' });
-    }
-  }
-
-  // POST /api/customer/messages/:professionalId
-  static async sendMessage(req, res) {
-    try {
-      const { professionalId } = req.params;
-      const { text } = req.body;
-      const userId = req.user.id;
-
-      if (!text?.trim()) {
-        return res.status(400).json({ success: false, message: 'Message cannot be empty' });
-      }
-
-      // Filter message for contact info
-      const MessageFilter = require('../middleware/messageFilter');
-      const filterResult = MessageFilter.filterMessage(text);
-
-      // If violations found, reject the message
-      if (!filterResult.isClean) {
-        return res.status(400).json({
-          success: false,
-          message: 'Contact information detected',
-          warning: filterResult.warning,
-          violations: filterResult.violations
-        });
-      }
-
-      // Find or create conversation
-      let conversation = await Conversation.findOne({
-        customer: userId,
-        professional: professionalId
-      });
-
-      if (!conversation) {
-        conversation = await Conversation.create({
-          customer: userId,
-          professional: professionalId,
-          messages: []
-        });
-      }
-
-      // Add message
-      conversation.messages.push({
-        sender: userId,
-        senderModel: 'User',
-        text: text.trim()
-      });
-
-      conversation.lastMessageAt = new Date();
-      conversation.customerUnread = false;
-      conversation.providerUnread = true;
-
-      await conversation.save();
-
-      res.json({
-        success: true,
-        message: 'Message sent successfully',
-        data: {
-          messageId: conversation.messages[conversation.messages.length - 1]._id,
-          text: text.trim(),
-          time: new Date()
-        }
-      });
-
-    } catch (error) {
-      console.error('Send message error:', error);
-      res.status(500).json({ success: false, message: 'Failed to send message' });
     }
   }
 

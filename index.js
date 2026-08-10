@@ -12,6 +12,9 @@ const authRoutes = require('./routes/authRoutes');
 const customerRoutes = require('./routes/customerRoutes');
 const providerRoutes = require('./routes/providerRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const locationRoutes = require('./routes/locationRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
+const PaymentController = require('./controllers/paymentController');
 
 // ✅ Import scheduler
 const { scheduleReminderEmails } = require('./services/schedulerService');
@@ -30,6 +33,10 @@ app.use(cors({
   credentials: true
 }));
 
+// Paystack webhook needs the raw request body for signature verification,
+// so it's mounted here, ahead of the global JSON body parser below.
+app.post('/api/payment/webhook', express.raw({ type: 'application/json' }), PaymentController.webhook);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -46,6 +53,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/customer', customerRoutes);
 app.use('/api/provider', providerRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/locations', locationRoutes);
+app.use('/api/payment', paymentRoutes);
 
 // Error handlers
 app.use((req, res) => {

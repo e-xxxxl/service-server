@@ -1,6 +1,7 @@
 // controllers/authController.js
 const User = require('../models/User');
 const ServiceProvider = require('../models/ServiceProvider');
+const VerificationToken = require('../models/VerificationToken');
 const JWTService = require('../config/jwt');
 const crypto = require('crypto');
 const emailService = require('../services/emailService');
@@ -126,11 +127,23 @@ static async updateProfile(req, res) {
         .select('+password')
         .populate('providerProfile');
 
+      if (user && user.isLocked()) {
+        return res.status(423).json({
+          success: false,
+          message: 'Account temporarily locked due to too many failed login attempts. Please try again in 30 minutes.'
+        });
+      }
+
       if (!user || !(await user.comparePassword(password))) {
+        if (user) await user.incrementLoginAttempts();
         return res.status(401).json({
           success: false,
           message: 'Invalid email or password'
         });
+      }
+
+      if (user.loginAttempts > 0) {
+        await user.resetLoginAttempts();
       }
 
       if (!user.isEmailVerified) {
@@ -170,12 +183,6 @@ static async updateProfile(req, res) {
           completedJobs: user.providerProfile.completedJobs
         };
       }
-
-      console.log('Login successful:', {
-        email: user.email,
-        accountType: user.accountType,
-        hasProviderProfile: !!user.providerProfile
-      });
 
       res.status(200).json({
         success: true,
@@ -253,6 +260,78 @@ static async verifyEmail(req, res) {
       });
     }
   }
+  static async forgotPassword(req, res) {
+    try {
+      const { email } = req.body;
+      const user = await User.findOne({ email: email?.toLowerCase().trim() });
+
+      // Always respond the same way whether or not the account exists,
+      // so this endpoint can't be used to enumerate registered emails.
+      if (!user) {
+        return res.status(200).json({
+          success: true,
+          message: 'If an account with that email exists, a password reset link has been sent.'
+        });
+      }
+
+      // Invalidate any previous outstanding reset tokens for this user.
+      await VerificationToken.deleteMany({ user: user._id, type: 'password_reset' });
+
+      const token = crypto.randomBytes(32).toString('hex');
+      await VerificationToken.create({
+        user: user._id,
+        token,
+        type: 'password_reset',
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000) // 1 hour
+      });
+
+      await emailService.sendPasswordResetEmail(user, token);
+
+      res.status(200).json({
+        success: true,
+        message: 'If an account with that email exists, a password reset link has been sent.'
+      });
+    } catch (error) {
+      console.error('Forgot password error:', error);
+      res.status(500).json({ success: false, message: 'Failed to process password reset request' });
+    }
+  }
+
+  static async resetPassword(req, res) {
+    try {
+      const { token } = req.params;
+      const { password } = req.body;
+
+      if (!password || password.length < 8) {
+        return res.status(400).json({ success: false, message: 'Password must be at least 8 characters' });
+      }
+
+      const verificationToken = await VerificationToken.findOne({ token, type: 'password_reset' });
+      if (!verificationToken || !verificationToken.isValid()) {
+        return res.status(400).json({ success: false, message: 'Invalid or expired reset link' });
+      }
+
+      const user = await User.findById(verificationToken.user);
+      if (!user) {
+        return res.status(400).json({ success: false, message: 'Invalid or expired reset link' });
+      }
+
+      user.password = password; // hashed by the pre-save hook
+      await user.save();
+
+      verificationToken.isUsed = true;
+      await verificationToken.save();
+
+      // Any other outstanding reset tokens for this user are now stale.
+      await VerificationToken.deleteMany({ user: user._id, type: 'password_reset', _id: { $ne: verificationToken._id } });
+
+      res.status(200).json({ success: true, message: 'Password reset successfully. Please sign in with your new password.' });
+    } catch (error) {
+      console.error('Reset password error:', error);
+      res.status(500).json({ success: false, message: 'Failed to reset password' });
+    }
+  }
+
   static async resendVerification(req, res) {
     try {
       const { email } = req.body;

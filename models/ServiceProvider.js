@@ -1,5 +1,6 @@
 // models/ServiceProvider.js - FIXED
 const mongoose = require('mongoose');
+const { isValidState, isValidLga } = require('../data/nigeriaLocations');
 
 const serviceProviderSchema = new mongoose.Schema({
   user: {
@@ -69,15 +70,64 @@ const serviceProviderSchema = new mongoose.Schema({
   // Address
   businessAddress: {
     street: String,
-    city: String,
-    state: String,
+    city: {
+      type: String,
+      validate: {
+        validator: function (value) {
+          if (!value) return true;
+          return isValidLga(this.businessAddress?.state, value);
+        },
+        message: (props) => `${props.value} is not a valid LGA/city for the selected state`
+      }
+    },
+    state: {
+      type: String,
+      validate: {
+        validator: (value) => !value || isValidState(value),
+        message: (props) => `${props.value} is not a valid Nigerian state`
+      }
+    },
     zipCode: String
   },
-  city: { type: String, trim: true, index: true },
-  state: { type: String, trim: true, index: true },
+  city: {
+    type: String,
+    trim: true,
+    index: true,
+    validate: {
+      validator: function (value) {
+        if (!value) return true;
+        return isValidLga(this.state, value);
+      },
+      message: (props) => `${props.value} is not a valid LGA/city for the selected state`
+    }
+  },
+  state: {
+    type: String,
+    trim: true,
+    index: true,
+    validate: {
+      validator: (value) => !value || isValidState(value),
+      message: (props) => `${props.value} is not a valid Nigerian state`
+    }
+  },
   serviceArea: [{
-    city: String,
-    state: String,
+    city: {
+      type: String,
+      validate: {
+        validator: function (value) {
+          if (!value) return true;
+          return isValidLga(this.state, value);
+        },
+        message: (props) => `${props.value} is not a valid LGA/city for the selected state`
+      }
+    },
+    state: {
+      type: String,
+      validate: {
+        validator: (value) => !value || isValidState(value),
+        message: (props) => `${props.value} is not a valid Nigerian state`
+      }
+    },
     radius: Number
   }],
   
@@ -91,6 +141,11 @@ const serviceProviderSchema = new mongoose.Schema({
   completedJobs: { type: Number, default: 0 },
   isAvailable: { type: Boolean, default: true },
   profileCompletionScore: { type: Number, default: 0 },
+  wallet: {
+    balance: { type: Number, default: 0 },
+    totalEarnings: { type: Number, default: 0 },
+    pendingEarnings: { type: Number, default: 0 }
+  },
   // Add inside serviceProviderSchema (near the other fields)
 reminderSent1hr: { type: Boolean, default: false },
 reminderSent24hr: { type: Boolean, default: false },

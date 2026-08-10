@@ -19,6 +19,7 @@ router.post('/favorites/:professionalId', CustomerController.toggleFavorite);
 // Messages - Only use methods that exist in the controller
 router.get('/messages', CustomerController.getMessages);
 router.get('/messages/:conversationId', CustomerController.getConversation);
+router.get('/messages/:conversationId/contact', CustomerController.getConversationContact);
 router.post('/messages/:professionalId', CustomerController.sendMessage);
 // routes/customerRoutes.js - Add this route
 router.get('/provider/:id', CustomerController.getProviderProfile);
@@ -31,9 +32,5 @@ router.post('/report', CustomerController.submitReport);
 
 router.post('/accept-quote/:conversationId/:messageId', CustomerController.acceptQuote);
 router.post('/reject-quote/:conversationId/:messageId', CustomerController.rejectQuote);
-router.post('/confirm-payment/:conversationId/:messageId', CustomerController.confirmPayment);
-
-// routes/customerRoutes.js
-router.post('/report', CustomerController.submitReport);
 
 module.exports = router;

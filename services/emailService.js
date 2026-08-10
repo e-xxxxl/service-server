@@ -432,8 +432,50 @@ const getNewProviderSubmissionEmailTemplate = (provider) => {
 };
 
 // -----------------------------------------------------------------------
+// Payment Confirmation Email (customer + provider)
+// -----------------------------------------------------------------------
+
+const getPaymentConfirmationEmailTemplate = ({ recipientName, isProvider, otherPartyName, amount, reference }) => {
+  const firstName = recipientName?.split(' ')[0] || 'there';
+  const formattedAmount = `₦${Number(amount || 0).toLocaleString()}`;
+  const dashboardUrl = `${process.env.CLIENT_URL}/${isProvider ? 'provider-dashboard' : 'dashboard'}`;
+
+  const body = `
+    ${eyebrow('Payment confirmed')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      ${isProvider ? 'You just got paid' : 'Payment successful'}
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      ${isProvider
+        ? `Hi ${firstName}, ${otherPartyName || 'your customer'} just paid <strong>${formattedAmount}</strong> for the job you quoted. It's been added to your wallet and the job is now active.`
+        : `Hi ${firstName}, your payment of <strong>${formattedAmount}</strong> to ${otherPartyName || 'your provider'} was successful. The job is now active and you can reach them directly in your conversation.`}
+    </p>
+
+    <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 0 0 28px 0;">
+      <table style="font-size: 13px; line-height: 1.6; color: ${INK_SOFT};">
+        <tr><td style="padding: 2px 8px 2px 0; font-weight: 500;">Amount:</td><td>${formattedAmount}</td></tr>
+        <tr><td style="padding: 2px 8px 2px 0; font-weight: 500;">Reference:</td><td>${reference}</td></tr>
+      </table>
+    </div>
+
+    ${button(dashboardUrl, isProvider ? 'View your wallet' : 'View your job')}
+  `;
+
+  return emailShell(isProvider ? 'A customer just paid you.' : 'Your payment was successful.', body);
+};
+
+// -----------------------------------------------------------------------
 // Convenience Functions
 // -----------------------------------------------------------------------
+
+const sendPaymentConfirmationEmail = async (user, { isProvider, otherPartyName, amount, reference }) => {
+  const html = getPaymentConfirmationEmailTemplate({ recipientName: user.fullName, isProvider, otherPartyName, amount, reference });
+  return sendEmail({
+    to: user.email,
+    subject: isProvider ? 'Payment received — job is now active' : 'Payment successful',
+    html
+  });
+};
 
 const sendApprovalEmail = async (user, provider) => {
   const html = getProviderApprovalEmailTemplate(user, provider);
@@ -470,12 +512,14 @@ module.exports = {
   sendApprovalEmail,         // ✅ NEW
   sendRejectionEmail,        // ✅ NEW
   sendNewProviderSubmissionEmail, // ✅ NEW
+  sendPaymentConfirmationEmail,
   getVerificationEmailTemplate,
   getWelcomeEmailTemplate,
   getResetPasswordEmailTemplate,
   getProviderApprovalEmailTemplate,
   getProviderRejectionEmailTemplate,
-  getNewProviderSubmissionEmailTemplate
+  getNewProviderSubmissionEmailTemplate,
+  getPaymentConfirmationEmailTemplate
 };
 
 // module.exports = {

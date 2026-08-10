@@ -1,7 +1,10 @@
 // config/jwt.js
 const jwt = require('jsonwebtoken');
 
-// config/jwt.js
+if (!process.env.JWT_SECRET) {
+  throw new Error('JWT_SECRET environment variable is required but not set');
+}
+
 class JWTService {
   static generateToken(user) {
     const payload = {
@@ -11,28 +14,16 @@ class JWTService {
       accountType: user.accountType || 'customer', // Include accountType
       role: user.role
     };
-    
-    console.log('Generating token for:', {
-      id: payload.id,
-      email: payload.email,
-      accountType: payload.accountType
-    });
-    
+
     return jwt.sign(
       payload,
-      process.env.JWT_SECRET || 'your-secret-key',
+      process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRE || '7d' }
     );
   }
 
   static verifyToken(token) {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-    console.log('Token decoded successfully:', { 
-      id: decoded.id, 
-      email: decoded.email,
-      accountType: decoded.accountType 
-    });
-    return decoded;
+    return jwt.verify(token, process.env.JWT_SECRET);
   }
 }
 

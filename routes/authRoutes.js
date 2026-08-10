@@ -4,12 +4,16 @@ const router = express.Router();
 const passport = require('../config/passport');
 const AuthController = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
+const { authLimiter, loginLimiter, verificationLimiter } = require('../middleware/rateLimiter');
+const { signupValidation, loginValidation, handleValidationErrors } = require('../middleware/validate');
 
 // Regular auth
-router.post('/signup', AuthController.signup);
-router.post('/login', AuthController.login);
+router.post('/signup', authLimiter, signupValidation, handleValidationErrors, AuthController.signup);
+router.post('/login', loginLimiter, loginValidation, handleValidationErrors, AuthController.login);
 router.post('/verify-email/:token', AuthController.verifyEmail);
-router.post('/resend-verification', AuthController.resendVerification);
+router.post('/resend-verification', verificationLimiter, AuthController.resendVerification);
+router.post('/forgot-password', verificationLimiter, AuthController.forgotPassword);
+router.post('/reset-password/:token', authLimiter, AuthController.resetPassword);
 router.get('/verify', protect, AuthController.verifyToken);
 // routes/authRoutes.js
 router.put('/update-profile', protect, AuthController.updateProfile);

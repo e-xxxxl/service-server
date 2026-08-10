@@ -30,7 +30,7 @@ const conversationSchema = new mongoose.Schema({
       totalAmount: Number,
       currency: { type: String, default: 'NGN' },
       validUntil: { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
-      status: { type: String, enum: ['pending', 'accepted', 'rejected', 'expired'], default: 'pending' },
+      status: { type: String, enum: ['pending', 'accepted', 'rejected', 'paid', 'expired', 'cancelled'], default: 'pending' },
       acceptedAt: Date,
       rejectedAt: Date,
       rejectionReason: String
@@ -56,9 +56,13 @@ const conversationSchema = new mongoose.Schema({
   providerUnread: { type: Boolean, default: false },
   bookingStatus: {
     type: String,
-    enum: ['none', 'quote_sent', 'quote_accepted', 'payment_pending', 'confirmed', 'in_progress', 'completed', 'cancelled'],
+    enum: ['none', 'quote_sent', 'quote_accepted', 'pending_payment', 'active', 'in_progress', 'completed', 'cancelled', 'disputed'],
     default: 'none'
-  }
+  },
+  // Flips to true only inside the server-side payment fulfillment step
+  // (paymentController) once a Paystack payment on this conversation is
+  // confirmed. Contact info is never released before that.
+  contactUnlocked: { type: Boolean, default: false }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Conversation', conversationSchema);

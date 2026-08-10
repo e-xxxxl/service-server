@@ -4,6 +4,10 @@ const User = require('../models/User');
 const Conversation = require('../models/Conversation');
 const Notification = require('../models/Notification');
 const MessageFilter = require('../middleware/messageFilter');
+const { isValidState, isValidLga } = require('../data/nigeriaLocations');
+const Transaction = require('../models/Transaction');
+const { notifyUser } = require('../services/notificationService');
+const { emitNewMessage } = require('../socket');
 
 const cloudinary = require('../config/cloudinary'); // ✅ Now works
 const fs = require('fs');
@@ -59,6 +63,13 @@ static async setupProfile(req, res) {
           success: false,
           message: `Missing required fields: ${missingFields.join(', ')}`
         });
+      }
+
+      if (!isValidState(state.trim())) {
+        return res.status(400).json({ success: false, message: 'Please select a valid Nigerian state' });
+      }
+      if (!isValidLga(state.trim(), city.trim())) {
+        return res.status(400).json({ success: false, message: 'Please select a valid LGA/city for the selected state' });
       }
 
       // Upload NIN document to Cloudinary
@@ -122,8 +133,7 @@ static async setupProfile(req, res) {
       }
 
       // Create notification for provider
-      await Notification.create({
-        user: userId,
+      await notifyUser(userId, {
         text: '✅ Your profile has been submitted for verification. Our team will review it within 24-48 hours.',
         kind: 'success'
       });
@@ -225,8 +235,7 @@ static async resubmitVerification(req, res) {
         { $set: updateData }
       );
 
-      await Notification.create({
-        user: userId,
+      await notifyUser(userId, {
         text: '📋 Your verification documents have been resubmitted for review.',
         kind: 'info'
       });
@@ -344,8 +353,6 @@ static async sendQuote(req, res) {
         createdAt: new Date()
       };
 
-      console.log('🔍 Pushing message:', JSON.stringify(newMsg, null, 2));
-
       conversation.messages.push(newMsg);
       conversation.lastMessageAt = new Date();
       conversation.providerUnread = false;
@@ -353,23 +360,23 @@ static async sendQuote(req, res) {
       conversation.bookingStatus = 'quote_sent';
 
       const saved = await conversation.save();
-      
-      // ✅ Get the raw saved message
       const rawMsg = saved.messages[saved.messages.length - 1].toObject();
-      console.log('🔍 Saved message from DB:', JSON.stringify({
-        messageType: rawMsg.messageType,
-        quote: rawMsg.quote,
-        text: rawMsg.text
-      }, null, 2));
 
-      await Notification.create({
-        user: customerId,
+      await notifyUser(customerId, {
         text: `💰 ${provider.companyName} sent you a quote of ₦${totalAmount.toLocaleString()}.`,
-        kind: 'action'
+        kind: 'action',
+        relatedConversation: saved._id
       });
 
-      res.json({ 
-        success: true, 
+      emitNewMessage({
+        conversationId: saved._id,
+        recipientUserId: customerId,
+        message: { ...rawMsg, senderName: provider.companyName },
+        senderName: provider.companyName
+      });
+
+      res.json({
+        success: true,
         message: 'Quote sent successfully!',
         data: { messageId: rawMsg._id, conversationId: saved._id }
       });
@@ -444,6 +451,7 @@ static async getMessages(req, res) {
         preview: conv.messages?.length ? conv.messages[conv.messages.length - 1]?.text || '' : '',
         time: conv.lastMessageAt,
         unread: conv.providerUnread || false,
+        contactUnlocked: conv.contactUnlocked || false,
         // ✅ Map messages and ensure all fields are included
         messages: (conv.messages || []).map(m => ({
           _id: m._id?.toString(),
@@ -498,16 +506,33 @@ static async sendMessage(req, res) {
     conversation.customerUnread = true;
     await conversation.save();
 
-    res.json({ success: true, message: 'Message sent', conversationId: conversation._id });
+    const savedMessage = conversation.messages[conversation.messages.length - 1].toObject();
+    emitNewMessage({
+      conversationId: conversation._id,
+      recipientUserId: customerId,
+      message: { ...savedMessage, senderName: provider.companyName },
+      senderName: provider.companyName
+    });
+
+    res.json({ success: true, message: 'Message sent', conversationId: conversation._id, messageId: savedMessage._id });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 }
 
   // PUT /api/provider/profile
+  // Only a whitelist of self-editable fields — never mass-assign req.body
+  // directly, since that would let a provider set fields like
+  // verificationStatus, isVisible, rating, or wallet balance on themselves.
   static async updateProfile(req, res) {
     try {
-      const provider = await ServiceProvider.findOneAndUpdate({ user: req.user.id }, { $set: req.body }, { new: true });
+      const editable = ['businessDescription', 'tagline', 'yearsOfExperience', 'teamSize', 'servicesOffered', 'isAvailable'];
+      const updateData = {};
+      for (const field of editable) {
+        if (req.body[field] !== undefined) updateData[field] = req.body[field];
+      }
+
+      const provider = await ServiceProvider.findOneAndUpdate({ user: req.user.id }, { $set: updateData }, { new: true, runValidators: true });
       res.json({ success: true, message: 'Profile updated', data: provider });
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
   }
@@ -525,7 +550,15 @@ static async sendMessage(req, res) {
   static async updateBusinessInfo(req, res) {
     try {
       const { businessAddress, phone } = req.body;
-      const provider = await ServiceProvider.findOneAndUpdate({ user: req.user.id }, { $set: { businessAddress } }, { new: true });
+
+      if (businessAddress?.state && !isValidState(businessAddress.state)) {
+        return res.status(400).json({ success: false, message: 'Please select a valid Nigerian state' });
+      }
+      if (businessAddress?.city && !isValidLga(businessAddress.state, businessAddress.city)) {
+        return res.status(400).json({ success: false, message: 'Please select a valid LGA/city for the selected state' });
+      }
+
+      const provider = await ServiceProvider.findOneAndUpdate({ user: req.user.id }, { $set: { businessAddress } }, { new: true, runValidators: true });
       if (phone) await User.findByIdAndUpdate(req.user.id, { phone });
       res.json({ success: true, message: 'Business info updated', data: provider });
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
@@ -578,6 +611,102 @@ static async sendMessage(req, res) {
 
   // POST /api/provider/messages/:customerId - ONLY ONE VERSION
   
+
+  // GET /api/provider/messages/:conversationId/contact
+  // Only returns the customer's phone/email once a payment on this
+  // conversation has unlocked contact info server-side (see paymentController).
+  static async getConversationContact(req, res) {
+    try {
+      const { conversationId } = req.params;
+      const provider = await ServiceProvider.findOne({ user: req.user.id });
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      const conversation = await Conversation.findOne({
+        _id: conversationId,
+        professional: provider._id
+      }).populate('customer', 'fullName email phone');
+
+      if (!conversation) {
+        return res.status(404).json({ success: false, message: 'Conversation not found' });
+      }
+
+      if (!conversation.contactUnlocked) {
+        return res.status(403).json({
+          success: false,
+          message: 'Contact information unlocks once the customer has paid an accepted quote on this conversation.'
+        });
+      }
+
+      res.json({
+        success: true,
+        data: {
+          name: conversation.customer?.fullName,
+          phone: conversation.customer?.phone || '',
+          email: conversation.customer?.email || ''
+        }
+      });
+    } catch (error) {
+      console.error('Get conversation contact error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load contact information' });
+    }
+  }
+
+  // GET /api/provider/wallet
+  static async getWallet(req, res) {
+    try {
+      const provider = await ServiceProvider.findOne({ user: req.user.id }).select('wallet');
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      res.json({
+        success: true,
+        data: {
+          balance: provider.wallet?.balance || 0,
+          totalEarnings: provider.wallet?.totalEarnings || 0,
+          pendingEarnings: provider.wallet?.pendingEarnings || 0
+        }
+      });
+    } catch (error) {
+      console.error('Get wallet error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load wallet' });
+    }
+  }
+
+  // GET /api/provider/transactions
+  static async getTransactions(req, res) {
+    try {
+      const provider = await ServiceProvider.findOne({ user: req.user.id });
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      const { page = 1, limit = 20 } = req.query;
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+
+      const [transactions, total] = await Promise.all([
+        Transaction.find({ provider: provider._id, status: 'success' })
+          .populate('customer', 'fullName')
+          .sort({ paidAt: -1 })
+          .skip(skip)
+          .limit(parseInt(limit)),
+        Transaction.countDocuments({ provider: provider._id, status: 'success' })
+      ]);
+
+      res.json({
+        success: true,
+        data: transactions.map(t => ({
+          id: t._id.toString(),
+          reference: t.reference,
+          amount: t.amount,
+          currency: t.currency,
+          customerName: t.customer?.fullName || 'Customer',
+          conversationId: t.conversation,
+          paidAt: t.paidAt
+        })),
+        pagination: { total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)), limit: parseInt(limit) }
+      });
+    } catch (error) {
+      console.error('Get transactions error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load transactions' });
+    }
+  }
 
   // GET /api/provider/notifications
   static async getNotifications(req, res) {

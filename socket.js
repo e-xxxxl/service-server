@@ -64,121 +64,44 @@ function initializeSocket(server) {
       socket.leave(room);
     });
 
-    // Send message
-    socket.on('send:message', async (data) => {
-      try {
-        const { conversationId, recipientId, text } = data;
-        
-        // Filter message
-        const MessageFilter = require('./middleware/messageFilter');
-        const filterResult = MessageFilter.filterMessage(text);
-        
-        if (!filterResult.isClean) {
-          socket.emit('message:error', {
-            message: 'Contact information detected',
-            warning: filterResult.warning,
-            violations: filterResult.violations
-          });
-          return;
-        }
-
-        // Save message to database
-        const Conversation = require('./models/Conversation');
-        let conversation = await Conversation.findById(conversationId);
-        
-        if (!conversation) {
-          conversation = await Conversation.create({
-            customer: socket.user.accountType === 'customer' ? socket.user.id : recipientId,
-            professional: socket.user.accountType === 'provider' ? socket.user.id : recipientId,
-            messages: []
-          });
-        }
-
-        const messageData = {
-          sender: socket.user.id,
-          senderModel: socket.user.accountType === 'provider' ? 'ServiceProvider' : 'User',
-          text: text.trim(),
-          createdAt: new Date()
-        };
-
-        conversation.messages.push(messageData);
-        conversation.lastMessageAt = new Date();
-        
-        if (socket.user.accountType === 'customer') {
-          conversation.providerUnread = true;
-          conversation.customerUnread = false;
-        } else {
-          conversation.customerUnread = true;
-          conversation.providerUnread = false;
-        }
-        
-        await conversation.save();
-
-        const message = {
-          ...messageData,
-          id: conversation.messages[conversation.messages.length - 1]._id,
-          senderName: socket.user.fullName
-        };
-
-        // Emit to conversation room
-        const conversationRoom = `conversation:${conversation._id}`;
-        io.to(conversationRoom).emit('message:received', {
-          conversationId: conversation._id,
-          message
-        });
-
-        // Notify recipient
-        const recipientRoom = `user:${recipientId}`;
-        io.to(recipientRoom).emit('message:notification', {
-          conversationId: conversation._id,
-          senderName: socket.user.fullName,
-          preview: text.substring(0, 50),
-          unreadCount: 1
-        });
-
-        socket.emit('message:sent', {
-          conversationId: conversation._id,
-          message
-        });
-
-      } catch (error) {
-        console.error('Message error:', error);
-        socket.emit('message:error', { message: 'Failed to send message' });
-      }
-    });
+    // Messages are persisted exclusively through the REST endpoints
+    // (customerController.sendMessage / providerController.sendMessage,
+    // plus quote/payment actions) - those handlers call getIO() to emit
+    // 'message:received' / 'message:notification' themselves once a message
+    // is actually saved. There is deliberately no socket-side write path
+    // here anymore, so there is only ever one place a message gets created.
 
     // Typing indicator
+    // Broadcast to the conversation room (not a specific recipient room) so
+    // neither side needs to know the other's raw user id client-side -
+    // socket.to() already excludes the sender.
     socket.on('typing:start', (data) => {
-      const { conversationId, recipientId } = data;
-      const recipientRoom = `user:${recipientId}`;
-      socket.to(recipientRoom).emit('typing:start', {
+      const { conversationId } = data;
+      socket.to(`conversation:${conversationId}`).emit('typing:start', {
         conversationId,
         userName: socket.user.fullName
       });
     });
 
     socket.on('typing:stop', (data) => {
-      const { conversationId, recipientId } = data;
-      const recipientRoom = `user:${recipientId}`;
-      socket.to(recipientRoom).emit('typing:stop', {
+      const { conversationId } = data;
+      socket.to(`conversation:${conversationId}`).emit('typing:stop', {
         conversationId,
         userName: socket.user.fullName
       });
     });
 
-    // Mark as read
+    // Mark as read - only clears the reading side's own unread flag.
+    // Clearing both regardless of who's reading would wrongly mark the
+    // other participant's unread messages as seen too.
     socket.on('messages:read', async (data) => {
       const { conversationId } = data;
       const Conversation = require('./models/Conversation');
-      
+
+      const unreadField = socket.user.accountType === 'provider' ? 'providerUnread' : 'customerUnread';
       await Conversation.updateOne(
         { _id: conversationId },
-        { 
-          $set: { 
-            customerUnread: false,
-            providerUnread: false
-          }
-        }
+        { $set: { [unreadField]: false } }
       );
 
       const conversationRoom = `conversation:${conversationId}`;
@@ -204,4 +127,26 @@ function getIO() {
   return io;
 }
 
-module.exports = { initializeSocket, getIO };
+// Shared broadcast helper for the REST message-sending controllers (the
+// only place messages are ever persisted). Pushes the new message to
+// anyone actively viewing the conversation, and a lighter notification
+// ping to the recipient's personal room so their conversation list /
+// unread badge updates even if they're not looking at this thread.
+function emitNewMessage({ conversationId, recipientUserId, message, senderName }) {
+  try {
+    getIO().to(`conversation:${conversationId}`).emit('message:received', {
+      conversationId,
+      message
+    });
+    getIO().to(`user:${recipientUserId}`).emit('message:notification', {
+      conversationId,
+      senderName,
+      preview: (message.text || '').substring(0, 50)
+    });
+  } catch (err) {
+    // Socket.io isn't initialized in this process (e.g. a one-off script) -
+    // the message is still persisted via REST, it just won't push live.
+  }
+}
+
+module.exports = { initializeSocket, getIO, emitNewMessage };

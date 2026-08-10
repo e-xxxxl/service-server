@@ -4,12 +4,16 @@ const router = express.Router();
 const multer = require('multer');
 const ProviderController = require('../controllers/providerController');
 const { protect, authorize } = require('../middleware/auth');
-const { ninStorage, selfieStorage, generalStorage } = require('../config/cloudinary');
 
-// Separate multer instances for different uploads
-const uploadNinDoc = multer({ storage: ninStorage });
-const uploadSelfie = multer({ storage: selfieStorage });
-const uploadGeneral = multer({ storage: generalStorage });
+// Uploads go to local temp disk first; ProviderController.uploadToCloudinary()
+// then streams the temp file to Cloudinary and deletes it. There is no
+// direct-to-Cloudinary multer storage engine configured (would need the
+// multer-storage-cloudinary package), so every upload route uses this
+// same disk-then-forward pattern for consistency.
+const uploadSelfie = multer({
+  storage: multer.diskStorage({}),
+  limits: { fileSize: 5 * 1024 * 1024 }
+});
 
 // Combined upload for profile setup
 const uploadProfileSetup = multer({
@@ -53,10 +57,14 @@ router.post('/upload-photo', uploadSelfie.single('photo'), ProviderController.up
 // Availability
 router.patch('/availability', ProviderController.updateAvailability);
 
+// Wallet
+router.get('/wallet', ProviderController.getWallet);
+router.get('/transactions', ProviderController.getTransactions);
+
 // Messages
 router.get('/messages', ProviderController.getMessages);
 router.post('/messages/:customerId', ProviderController.sendMessage);
-router.post('/send-quote/:customerId', ProviderController.sendQuote);
+router.get('/messages/:conversationId/contact', ProviderController.getConversationContact);
 
 // Jobs
 router.get('/jobs', ProviderController.getJobs);
