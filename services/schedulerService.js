@@ -10,48 +10,77 @@ const ADMIN_EMAILS = [
   'adm@9jatradiespages.com'
 ];
 
-// Schedule: Run every minute to check for unverified providers
+// Guards against overlapping ticks within this process - a full pass
+// awaits an external email API call per pending provider, which can easily
+// take longer than the tick interval once there are more than a couple of
+// providers due for a reminder.
+let reminderRunInProgress = false;
+
+// Schedule: check every 5 minutes for unverified providers due a reminder.
+// (A 1-hour-wide eligibility window doesn't need minute-level polling -
+// checking every 5 minutes still catches everyone comfortably inside it,
+// with far less overlap risk and Resend API load.)
 const scheduleReminderEmails = () => {
-  // Check every minute
-  cron.schedule('* * * * *', async () => {
+  cron.schedule('*/5 * * * *', async () => {
+    if (reminderRunInProgress) {
+      console.log('⏭️  Skipping reminder check - previous run still in progress');
+      return;
+    }
+    reminderRunInProgress = true;
     try {
       console.log('🔔 Checking for providers needing reminder emails...');
-      
+
       const now = new Date();
-      
+
       // Find providers with 'pending' or 'submitted' status who signed up within last 24 hours
       const providers = await ServiceProvider.find({
         verificationStatus: { $in: ['pending', 'submitted'] },
         user: { $exists: true }
       }).populate('user', 'email fullName createdAt');
-      
+
       for (const provider of providers) {
         if (!provider.user) continue;
-        
+
         const signupTime = provider.user.createdAt;
         const hoursSinceSignup = (now - signupTime) / (1000 * 60 * 60);
-        
-        // Check if 1 hour reminder should be sent
+
+        // Check if 1 hour reminder should be sent. The flag flip happens
+        // atomically and *before* the email send, filtered on the flag
+        // still being false - this is the same claim-before-act pattern
+        // used for payment fulfillment (see paymentController.js). It's
+        // what actually prevents duplicate sends under overlapping ticks
+        // or multiple server processes hitting the same DB; checking the
+        // in-memory flag on `provider` first is not enough on its own.
         if (hoursSinceSignup >= 1 && hoursSinceSignup < 2 && !provider.reminderSent1hr) {
-          console.log(`📧 Sending 1hr reminder to ${provider.user.email}`);
-          await sendReminderEmail(provider, '1hour');
-          provider.reminderSent1hr = true;
-          await provider.save();
+          const claimed = await ServiceProvider.findOneAndUpdate(
+            { _id: provider._id, reminderSent1hr: false },
+            { reminderSent1hr: true }
+          );
+          if (claimed) {
+            console.log(`📧 Sending 1hr reminder to ${provider.user.email}`);
+            await sendReminderEmail(provider, '1hour');
+          }
         }
-        
-        // Check if 24 hour reminder should be sent
+
+        // Check if 24 hour reminder should be sent (same atomic claim)
         if (hoursSinceSignup >= 24 && hoursSinceSignup < 25 && !provider.reminderSent24hr) {
-          console.log(`📧 Sending 24hr reminder to ${provider.user.email}`);
-          await sendReminderEmail(provider, '24hours');
-          provider.reminderSent24hr = true;
-          await provider.save();
+          const claimed = await ServiceProvider.findOneAndUpdate(
+            { _id: provider._id, reminderSent24hr: false },
+            { reminderSent24hr: true }
+          );
+          if (claimed) {
+            console.log(`📧 Sending 24hr reminder to ${provider.user.email}`);
+            await sendReminderEmail(provider, '24hours');
+          }
         }
       }
     } catch (error) {
       console.error('Reminder email error:', error);
+    } finally {
+      reminderRunInProgress = false;
     }
   });
-  
+
   console.log('✅ Reminder email scheduler started');
 };
 

@@ -31,4 +31,15 @@ router.patch('/notifications/:id/read', CustomerController.markNotificationRead)
 router.post('/accept-quote/:conversationId/:messageId', CustomerController.acceptQuote);
 router.post('/reject-quote/:conversationId/:messageId', CustomerController.rejectQuote);
 
+// Jobs
+router.post('/jobs/:conversationId/confirm-completion', CustomerController.confirmJobCompletion);
+router.post('/jobs/:conversationId/reject-completion', CustomerController.rejectJobCompletion);
+router.post('/jobs/:conversationId/rate', CustomerController.rateJob);
+
+// Job postings
+router.post('/job-postings', CustomerController.createJobPosting);
+router.get('/job-postings', CustomerController.getMyJobPostings);
+router.get('/job-postings/:id', CustomerController.getJobPostingDetail);
+router.patch('/job-postings/:id/close', CustomerController.closeJobPosting);
+
 module.exports = router;

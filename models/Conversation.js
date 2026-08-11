@@ -68,7 +68,12 @@ const conversationSchema = new mongoose.Schema({
   job: {
     deadline: Date,
     startedAt: Date,
-    completedAt: Date
+    // Set when the provider marks the job done - the job isn't actually
+    // finished until the customer confirms (see customerConfirmedAt).
+    // Cleared if the customer rejects the completion claim, so the
+    // provider can mark it complete again later.
+    completedAt: Date,
+    customerConfirmedAt: Date
   }
 }, { timestamps: true });
 

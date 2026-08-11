@@ -11,6 +11,26 @@ const { emitNewMessage } = require('../socket');
 
 const cloudinary = require('../config/cloudinary'); // ✅ Now works
 const fs = require('fs');
+const { getJobQuote } = require('../utils/jobSummary');
+const JobPosting = require('../models/JobPosting');
+
+function toJobSummary(conv) {
+  const quote = getJobQuote(conv);
+  const awaitingConfirmation = !!conv.job?.completedAt && !conv.job?.customerConfirmedAt;
+  return {
+    id: conv._id,
+    conversationId: conv._id,
+    customerId: conv.customer?._id,
+    customerName: conv.customer?.fullName || 'Customer',
+    serviceType: quote?.serviceDescription || 'Service',
+    amount: quote?.totalAmount || 0,
+    bookingStatus: conv.bookingStatus,
+    awaitingConfirmation,
+    deadline: conv.job?.deadline || null,
+    startedAt: conv.job?.startedAt || null,
+    completedAt: conv.job?.completedAt || null
+  };
+}
 
 class ProviderController {
 
@@ -399,6 +419,14 @@ static async getDashboard(req, res) {
       const user = await User.findById(userId);
       const recentConversations = await Conversation.find({ professional: provider._id })
         .sort({ lastMessageAt: -1 }).limit(5).populate('customer', 'fullName');
+      const activeConversations = await Conversation.find({
+        professional: provider._id,
+        bookingStatus: { $in: ['active', 'in_progress'] }
+      }).sort({ lastMessageAt: -1 }).limit(5).populate('customer', 'fullName');
+      const activeJobsCount = await Conversation.countDocuments({
+        professional: provider._id,
+        bookingStatus: { $in: ['active', 'in_progress'] }
+      });
       const notifications = await Notification.find({ user: userId }).sort({ createdAt: -1 }).limit(10);
 
       res.json({
@@ -410,7 +438,7 @@ static async getDashboard(req, res) {
           verificationStatus: provider.verificationStatus,
           rejectionReason: provider.rejectionReason,
           isVisible: provider.isVisible,
-          activeJobs: [],
+          activeJobs: activeConversations.map(toJobSummary),
           recentMessages: recentConversations.map(conv => ({
             id: conv._id,
             customerId: conv.customer?._id,
@@ -420,7 +448,7 @@ static async getDashboard(req, res) {
             unread: conv.providerUnread || false
           })),
           notifications: notifications.map(n => ({ id: n._id, text: n.text, time: n.createdAt, kind: n.kind, read: n.read })),
-          stats: { activeJobs: 0, completedJobs: provider.completedJobs || 0, rating: provider.rating || 0, responseRate: provider.responseRate || 0 }
+          stats: { activeJobs: activeJobsCount, completedJobs: provider.completedJobs || 0, rating: provider.rating || 0, responseRate: provider.responseRate || 0 }
         }
       });
     } catch (error) {
@@ -578,10 +606,129 @@ static async sendMessage(req, res) {
   }
 
   // GET /api/provider/jobs
-  static async getJobs(req, res) { res.json({ success: true, data: [] }); }
+  static async getJobs(req, res) {
+    try {
+      const provider = await ServiceProvider.findOne({ user: req.user.id });
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
 
-  // POST /api/provider/jobs/:jobId/respond
-  static async respondToJob(req, res) { res.json({ success: true, message: 'Response recorded' }); }
+      const conversations = await Conversation.find({
+        professional: provider._id,
+        bookingStatus: { $in: ['active', 'in_progress', 'completed', 'cancelled', 'disputed'] }
+      }).sort({ lastMessageAt: -1 }).populate('customer', 'fullName');
+
+      res.json({ success: true, data: conversations.map(toJobSummary) });
+    } catch (error) {
+      console.error('Get jobs error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load jobs' });
+    }
+  }
+
+  // GET /api/provider/job-postings - browse open postings, optionally
+  // filtered by category/state/city (same loose regex/exact-match style as
+  // customer search).
+  static async browseJobPostings(req, res) {
+    try {
+      const provider = await ServiceProvider.findOne({ user: req.user.id });
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      const { category, state, city } = req.query;
+      const filter = { status: 'open' };
+      if (category && category.trim()) filter.category = { $regex: category.trim(), $options: 'i' };
+      if (state && state.trim()) filter.state = state.trim();
+      if (city && city.trim()) filter.city = city.trim();
+
+      const postings = await JobPosting.find(filter)
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .populate('customer', 'fullName');
+
+      res.json({
+        success: true,
+        data: postings.map(p => ({
+          id: p._id,
+          title: p.title,
+          description: p.description,
+          category: p.category,
+          state: p.state,
+          city: p.city,
+          budget: p.budget || null,
+          postedBy: p.customer?.fullName || 'Customer',
+          createdAt: p.createdAt,
+          alreadyApplied: p.applicants.some(a => a.provider.toString() === provider._id.toString())
+        }))
+      });
+    } catch (error) {
+      console.error('Browse job postings error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load job postings' });
+    }
+  }
+
+  // POST /api/provider/job-postings/:id/apply
+  static async applyToJobPosting(req, res) {
+    try {
+      const provider = await ServiceProvider.findOne({ user: req.user.id });
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+      if (provider.verificationStatus !== 'approved' || !provider.isVisible) {
+        return res.status(403).json({ success: false, message: 'Your profile must be approved before you can apply to jobs' });
+      }
+
+      const posting = await JobPosting.findById(req.params.id);
+      if (!posting || posting.status !== 'open') {
+        return res.status(404).json({ success: false, message: 'This job posting is no longer open' });
+      }
+      if (posting.applicants.some(a => a.provider.toString() === provider._id.toString())) {
+        return res.status(400).json({ success: false, message: 'You already applied to this job' });
+      }
+
+      posting.applicants.push({
+        provider: provider._id,
+        message: (req.body?.message || '').trim().slice(0, 500)
+      });
+      await posting.save();
+
+      await notifyUser(posting.customer, {
+        text: `📩 ${provider.companyName || 'A provider'} is interested in your job "${posting.title}".`,
+        kind: 'info'
+      });
+
+      res.json({ success: true, message: 'Application sent' });
+    } catch (error) {
+      console.error('Apply to job posting error:', error);
+      res.status(500).json({ success: false, message: 'Failed to apply to job posting' });
+    }
+  }
+
+  // GET /api/provider/job-postings/applied
+  static async getMyJobApplications(req, res) {
+    try {
+      const provider = await ServiceProvider.findOne({ user: req.user.id });
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      const postings = await JobPosting.find({ 'applicants.provider': provider._id }).sort({ createdAt: -1 });
+
+      res.json({
+        success: true,
+        data: postings.map(p => {
+          const mine = p.applicants.find(a => a.provider.toString() === provider._id.toString());
+          return {
+            id: p._id,
+            title: p.title,
+            description: p.description,
+            category: p.category,
+            state: p.state,
+            city: p.city,
+            budget: p.budget || null,
+            postingStatus: p.status,
+            myMessage: mine?.message || '',
+            appliedAt: mine?.appliedAt || null
+          };
+        })
+      });
+    } catch (error) {
+      console.error('Get my job applications error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load your applications' });
+    }
+  }
 
   // POST /api/provider/jobs/:conversationId/start
   static async startJob(req, res) {
@@ -642,13 +789,18 @@ static async sendMessage(req, res) {
       if (!['active', 'in_progress'].includes(conversation.bookingStatus)) {
         return res.status(400).json({ success: false, message: 'This job cannot be marked complete from its current status' });
       }
+      if (conversation.job?.completedAt) {
+        return res.status(400).json({ success: false, message: 'This job is already awaiting customer confirmation' });
+      }
 
-      conversation.bookingStatus = 'completed';
+      // bookingStatus stays active/in_progress until the customer confirms -
+      // see customerController.confirmJobCompletion, which is the only place
+      // that finalizes bookingStatus and increments completedJobs.
       conversation.job = { ...conversation.job, completedAt: new Date() };
       conversation.messages.push({
         sender: req.user.id,
         senderModel: 'ServiceProvider',
-        text: `✅ ${provider.companyName} marked this job as completed.`,
+        text: `✅ ${provider.companyName} marked this job as completed. Awaiting your confirmation.`,
         messageType: 'job_completed',
         createdAt: new Date()
       });
@@ -656,14 +808,11 @@ static async sendMessage(req, res) {
       conversation.customerUnread = true;
       const saved = await conversation.save();
 
-      await Promise.all([
-        notifyUser(conversation.customer, {
-          text: `✅ ${provider.companyName} marked your job as completed.`,
-          kind: 'success',
-          relatedConversation: conversation._id
-        }),
-        ServiceProvider.findByIdAndUpdate(provider._id, { $inc: { completedJobs: 1 } })
-      ]);
+      await notifyUser(conversation.customer, {
+        text: `✅ ${provider.companyName} marked your job as completed. Please confirm to finalize.`,
+        kind: 'action',
+        relatedConversation: conversation._id
+      });
 
       const savedMessage = saved.messages[saved.messages.length - 1].toObject();
       emitNewMessage({
@@ -673,7 +822,7 @@ static async sendMessage(req, res) {
         senderName: provider.companyName
       });
 
-      res.json({ success: true, message: 'Job marked as completed', data: { completedAt: conversation.job.completedAt } });
+      res.json({ success: true, message: 'Job marked as completed - awaiting customer confirmation', data: { completedAt: conversation.job.completedAt } });
     } catch (error) {
       console.error('Complete job error:', error);
       res.status(500).json({ success: false, message: 'Failed to mark job as completed' });

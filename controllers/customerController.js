@@ -4,8 +4,12 @@ const User = require('../models/User');
 const Conversation = require('../models/Conversation');
 const Notification = require('../models/Notification');
 const Favorite = require('../models/Favorite');
+const JobPosting = require('../models/JobPosting');
+const Review = require('../models/Review');
 const { notifyUser } = require('../services/notificationService');
 const { emitNewMessage } = require('../socket');
+const { getJobQuote } = require('../utils/jobSummary');
+const { isValidState, isValidLga } = require('../data/nigeriaLocations');
 
 class CustomerController {
   // GET /api/customer/dashboard
@@ -244,13 +248,18 @@ static async getProviderProfile(req, res) {
       // Check if favorited by current user
       let isFavorited = false;
       if (req.user) {
-        const fav = await Favorite.findOne({ 
-          customer: req.user.id, 
-          professional: provider._id 
+        const fav = await Favorite.findOne({
+          customer: req.user.id,
+          professional: provider._id
         });
         isFavorited = !!fav;
       }
-      
+
+      const reviews = await Review.find({ provider: provider._id })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .populate('customer', 'fullName');
+
       res.json({
         success: true,
         data: {
@@ -276,7 +285,16 @@ static async getProviderProfile(req, res) {
           businessAddress: provider.businessAddress || {},
           isAvailable: provider.isAvailable,
           lastActive: provider.lastActive || null,
-          isFavorited
+          isFavorited,
+          reviews: reviews.map(r => ({
+            id: r._id.toString(),
+            rating: r.rating,
+            comment: r.comment,
+            // First name only - this is a public profile, not a place to
+            // expose a reviewing customer's full identity.
+            customerName: (r.customer?.fullName || 'Customer').split(' ')[0],
+            createdAt: r.createdAt
+          }))
           // Contact info is intentionally omitted — see the contact-unlock
           // endpoint on the conversation once a payment has gone through.
         }
@@ -559,12 +577,19 @@ static async getMessages(req, res) {
       })
       .lean();
 
+    const reviews = await Review.find({ conversation: { $in: conversations.map(c => c._id) } })
+      .select('conversation rating comment');
+    const reviewByConversation = new Map(reviews.map(r => [r.conversation.toString(), r]));
+
     const formatted = conversations
       .filter(c => c.professional)
       .map(conv => {
         const last = conv.messages?.length
           ? conv.messages[conv.messages.length - 1]
           : null;
+
+        const quote = getJobQuote(conv);
+        const review = reviewByConversation.get(conv._id.toString());
 
         return {
           id: conv._id.toString(),
@@ -578,7 +603,10 @@ static async getMessages(req, res) {
           unread: conv.customerUnread || false,
           contactUnlocked: conv.contactUnlocked || false,
           bookingStatus: conv.bookingStatus || 'none',
-          job: conv.job || null
+          job: conv.job || null,
+          serviceType: quote?.serviceDescription || null,
+          amount: quote?.totalAmount || null,
+          myReview: review ? { rating: review.rating, comment: review.comment } : null
         };
       });
 
@@ -756,6 +784,288 @@ static async rejectQuote(req, res) {
       res.json({ success: true, message: 'Quote declined.' });
     } catch (error) {
       res.status(500).json({ success: false, message: 'Failed to reject quote' });
+    }
+  }
+
+  // POST /api/customer/jobs/:conversationId/confirm-completion
+  static async confirmJobCompletion(req, res) {
+    try {
+      const { conversationId } = req.params;
+      const userId = req.user.id;
+
+      const conversation = await Conversation.findOne({ _id: conversationId, customer: userId });
+      if (!conversation) return res.status(404).json({ success: false, message: 'Job not found' });
+      if (!conversation.job?.completedAt || conversation.job?.customerConfirmedAt) {
+        return res.status(400).json({ success: false, message: 'This job is not awaiting your confirmation' });
+      }
+
+      conversation.bookingStatus = 'completed';
+      conversation.job = { ...conversation.job, customerConfirmedAt: new Date() };
+      conversation.messages.push({
+        sender: userId,
+        senderModel: 'User',
+        text: '✅ Customer confirmed the job as completed.',
+        messageType: 'job_completed',
+        createdAt: new Date()
+      });
+      conversation.lastMessageAt = new Date();
+      conversation.providerUnread = true;
+      const saved = await conversation.save();
+
+      const provider = await ServiceProvider.findByIdAndUpdate(
+        conversation.professional,
+        { $inc: { completedJobs: 1 } },
+        { new: true }
+      );
+      if (provider) {
+        await notifyUser(provider.user, {
+          text: '🎉 The customer confirmed your job as completed.',
+          kind: 'success',
+          relatedConversation: conversation._id
+        });
+      }
+
+      const savedMessage = saved.messages[saved.messages.length - 1].toObject();
+      emitNewMessage({
+        conversationId: conversation._id,
+        recipientUserId: provider?.user,
+        message: savedMessage,
+        senderName: 'Customer'
+      });
+
+      res.json({ success: true, message: 'Job confirmed as completed', data: { customerConfirmedAt: conversation.job.customerConfirmedAt } });
+    } catch (error) {
+      console.error('Confirm job completion error:', error);
+      res.status(500).json({ success: false, message: 'Failed to confirm job completion' });
+    }
+  }
+
+  // POST /api/customer/jobs/:conversationId/reject-completion
+  static async rejectJobCompletion(req, res) {
+    try {
+      const { conversationId } = req.params;
+      const { reason } = req.body;
+      const userId = req.user.id;
+
+      const conversation = await Conversation.findOne({ _id: conversationId, customer: userId });
+      if (!conversation) return res.status(404).json({ success: false, message: 'Job not found' });
+      if (!conversation.job?.completedAt || conversation.job?.customerConfirmedAt) {
+        return res.status(400).json({ success: false, message: 'This job is not awaiting your confirmation' });
+      }
+
+      // Revert to in_progress so the provider can address the issue and
+      // mark it complete again - no admin involvement for a simple reject.
+      conversation.bookingStatus = 'in_progress';
+      conversation.job = { ...conversation.job, completedAt: null };
+      conversation.messages.push({
+        sender: userId,
+        senderModel: 'User',
+        text: `❌ Customer rejected the completion claim. Reason: ${reason || 'Not specified'}`,
+        messageType: 'text',
+        createdAt: new Date()
+      });
+      conversation.lastMessageAt = new Date();
+      conversation.providerUnread = true;
+      const saved = await conversation.save();
+
+      const provider = await ServiceProvider.findById(conversation.professional);
+      if (provider) {
+        await notifyUser(provider.user, {
+          text: `❌ The customer rejected your completion claim. Reason: ${reason || 'Not specified'}`,
+          kind: 'action',
+          relatedConversation: conversation._id
+        });
+      }
+
+      const savedMessage = saved.messages[saved.messages.length - 1].toObject();
+      emitNewMessage({
+        conversationId: conversation._id,
+        recipientUserId: provider?.user,
+        message: savedMessage,
+        senderName: 'Customer'
+      });
+
+      res.json({ success: true, message: 'Completion claim rejected' });
+    } catch (error) {
+      console.error('Reject job completion error:', error);
+      res.status(500).json({ success: false, message: 'Failed to reject job completion' });
+    }
+  }
+
+  // POST /api/customer/jobs/:conversationId/rate
+  static async rateJob(req, res) {
+    try {
+      const { conversationId } = req.params;
+      const { rating, comment } = req.body;
+      const userId = req.user.id;
+
+      const ratingNum = Number(rating);
+      if (!Number.isInteger(ratingNum) || ratingNum < 1 || ratingNum > 5) {
+        return res.status(400).json({ success: false, message: 'Rating must be a whole number from 1 to 5' });
+      }
+
+      const conversation = await Conversation.findOne({ _id: conversationId, customer: userId });
+      if (!conversation) return res.status(404).json({ success: false, message: 'Job not found' });
+      if (conversation.bookingStatus !== 'completed') {
+        return res.status(400).json({ success: false, message: 'You can only rate a job after it is completed' });
+      }
+
+      const existing = await Review.findOne({ conversation: conversationId });
+      if (existing) {
+        return res.status(400).json({ success: false, message: 'You already rated this job' });
+      }
+
+      const review = await Review.create({
+        conversation: conversationId,
+        customer: userId,
+        provider: conversation.professional,
+        rating: ratingNum,
+        comment: (comment || '').trim().slice(0, 500)
+      });
+
+      // Running average - safe here because a conversation can only ever be
+      // rated once (enforced above + the unique index on Review.conversation),
+      // so there's no concurrent-write race on the same job to double-count.
+      const provider = await ServiceProvider.findById(conversation.professional);
+      if (provider) {
+        const newTotalReviews = (provider.totalReviews || 0) + 1;
+        const newRating = ((provider.rating || 0) * (provider.totalReviews || 0) + ratingNum) / newTotalReviews;
+        provider.rating = Math.round(newRating * 10) / 10;
+        provider.totalReviews = newTotalReviews;
+        await provider.save();
+
+        await notifyUser(provider.user, {
+          text: `⭐ You received a ${ratingNum}-star rating${review.comment ? `: "${review.comment}"` : '.'}`,
+          kind: 'info',
+          relatedConversation: conversation._id
+        });
+      }
+
+      res.status(201).json({ success: true, message: 'Rating submitted', data: { rating: ratingNum, comment: review.comment } });
+    } catch (error) {
+      if (error.code === 11000) {
+        return res.status(400).json({ success: false, message: 'You already rated this job' });
+      }
+      console.error('Rate job error:', error);
+      res.status(500).json({ success: false, message: 'Failed to submit rating' });
+    }
+  }
+
+  // POST /api/customer/job-postings
+  static async createJobPosting(req, res) {
+    try {
+      const { title, description, category, state, city, budget } = req.body;
+      const userId = req.user.id;
+
+      if (!title?.trim() || !description?.trim()) {
+        return res.status(400).json({ success: false, message: 'Title and description are required' });
+      }
+      if (state && !isValidState(state)) {
+        return res.status(400).json({ success: false, message: 'Invalid state' });
+      }
+      if (city && !isValidLga(state, city)) {
+        return res.status(400).json({ success: false, message: 'Invalid city/LGA for the selected state' });
+      }
+
+      const posting = await JobPosting.create({
+        customer: userId,
+        title: title.trim(),
+        description: description.trim(),
+        category: category?.trim() || '',
+        state: state || '',
+        city: city || '',
+        budget: budget || undefined
+      });
+
+      res.status(201).json({ success: true, message: 'Job posted', data: posting });
+    } catch (error) {
+      console.error('Create job posting error:', error);
+      res.status(500).json({ success: false, message: 'Failed to post job' });
+    }
+  }
+
+  // GET /api/customer/job-postings
+  static async getMyJobPostings(req, res) {
+    try {
+      const postings = await JobPosting.find({ customer: req.user.id }).sort({ createdAt: -1 });
+      res.json({
+        success: true,
+        data: postings.map(p => ({
+          id: p._id,
+          title: p.title,
+          description: p.description,
+          category: p.category,
+          state: p.state,
+          city: p.city,
+          budget: p.budget || null,
+          status: p.status,
+          applicantCount: p.applicants.length,
+          createdAt: p.createdAt
+        }))
+      });
+    } catch (error) {
+      console.error('Get my job postings error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load your job postings' });
+    }
+  }
+
+  // GET /api/customer/job-postings/:id
+  static async getJobPostingDetail(req, res) {
+    try {
+      const posting = await JobPosting.findOne({ _id: req.params.id, customer: req.user.id })
+        .populate({
+          path: 'applicants.provider',
+          model: 'ServiceProvider',
+          populate: { path: 'user', model: 'User', select: 'fullName' }
+        });
+      if (!posting) return res.status(404).json({ success: false, message: 'Job posting not found' });
+
+      res.json({
+        success: true,
+        data: {
+          id: posting._id,
+          title: posting.title,
+          description: posting.description,
+          category: posting.category,
+          state: posting.state,
+          city: posting.city,
+          budget: posting.budget || null,
+          status: posting.status,
+          createdAt: posting.createdAt,
+          applicants: posting.applicants
+            .filter(a => a.provider)
+            .map(a => ({
+              providerId: a.provider._id,
+              name: a.provider.user?.fullName || a.provider.companyName || 'Provider',
+              companyName: a.provider.companyName,
+              serviceType: a.provider.serviceType,
+              rating: a.provider.rating || 0,
+              completedJobs: a.provider.completedJobs || 0,
+              location: [a.provider.city, a.provider.state].filter(Boolean).join(', '),
+              message: a.message,
+              appliedAt: a.appliedAt
+            }))
+        }
+      });
+    } catch (error) {
+      console.error('Get job posting detail error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load job posting' });
+    }
+  }
+
+  // PATCH /api/customer/job-postings/:id/close
+  static async closeJobPosting(req, res) {
+    try {
+      const posting = await JobPosting.findOneAndUpdate(
+        { _id: req.params.id, customer: req.user.id, status: 'open' },
+        { status: 'closed' },
+        { new: true }
+      );
+      if (!posting) return res.status(404).json({ success: false, message: 'Open job posting not found' });
+      res.json({ success: true, message: 'Job posting closed' });
+    } catch (error) {
+      console.error('Close job posting error:', error);
+      res.status(500).json({ success: false, message: 'Failed to close job posting' });
     }
   }
 

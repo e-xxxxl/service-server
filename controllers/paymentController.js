@@ -12,6 +12,11 @@ const { emitNewMessage } = require('../socket');
 // Platform commission is taken only from the workmanship portion of a
 // quote, never from materials or other costs.
 const PLATFORM_COMMISSION_RATE = 0.15;
+// PAUSED: commission collection is switched off for now - providers are
+// paid the full quote amount. Flip this back to true to re-enable the 15%
+// cut (see platformCommission below); rate is left in place so no formula
+// needs to be re-derived when that happens.
+const COMMISSION_ENABLED = false;
 
 // Runs once a Paystack payment is confirmed successful, whichever of the
 // webhook or the /verify fallback gets there first. `transaction` must
@@ -149,9 +154,11 @@ class PaymentController {
 
       // Platform commission is taken only from the workmanship portion,
       // never from materials or other costs - the provider is reimbursed
-      // for those in full.
+      // for those in full. Currently paused - see COMMISSION_ENABLED.
       const workmanshipCost = message.quote.workmanshipCost || 0;
-      const platformCommission = Math.round(workmanshipCost * PLATFORM_COMMISSION_RATE);
+      const platformCommission = COMMISSION_ENABLED
+        ? Math.round(workmanshipCost * PLATFORM_COMMISSION_RATE)
+        : 0; // Math.round(workmanshipCost * PLATFORM_COMMISSION_RATE)
       const providerPayout = amount - platformCommission;
 
       const customer = await User.findById(userId);
