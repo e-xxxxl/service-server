@@ -18,18 +18,19 @@ const conversationSchema = new mongoose.Schema({
     text: { type: String, default: '' },
     messageType: {
       type: String,
-      enum: ['text', 'quote', 'quote_accepted', 'quote_rejected', 'payment_requested', 'payment_confirmed', 'job_completed'],
+      enum: ['text', 'quote', 'quote_accepted', 'quote_rejected', 'payment_requested', 'payment_confirmed', 'job_started', 'job_completed'],
       default: 'text'
     },
     quote: {
       serviceDescription: String,
       materials: String,
-      laborCost: Number,
+      workmanshipCost: Number,
       materialCost: Number,
-      additionalFees: Number,
+      otherCosts: Number,
       totalAmount: Number,
       currency: { type: String, default: 'NGN' },
       validUntil: { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
+      deadline: Date, // provider's proposed completion date, copied onto conversation.job once the job goes active
       status: { type: String, enum: ['pending', 'accepted', 'rejected', 'paid', 'expired', 'cancelled'], default: 'pending' },
       acceptedAt: Date,
       rejectedAt: Date,
@@ -62,7 +63,13 @@ const conversationSchema = new mongoose.Schema({
   // Flips to true only inside the server-side payment fulfillment step
   // (paymentController) once a Paystack payment on this conversation is
   // confirmed. Contact info is never released before that.
-  contactUnlocked: { type: Boolean, default: false }
+  contactUnlocked: { type: Boolean, default: false },
+  // Job lifecycle, set once the job goes active (payment confirmed).
+  job: {
+    deadline: Date,
+    startedAt: Date,
+    completedAt: Date
+  }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Conversation', conversationSchema);

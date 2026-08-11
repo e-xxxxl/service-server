@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const AdminController = require('../controllers/adminController');
+const SupportController = require('../controllers/supportController');
 const { protect, authorize } = require('../middleware/auth');
 
 router.post('/login', AdminController.login);
@@ -10,6 +11,7 @@ router.use(authorize('admin'));
 
 router.get('/verify', (req, res) => res.json({ success: true, admin: { id: req.user.id, fullName: req.user.fullName, email: req.user.email, role: req.user.role } }));
 router.get('/dashboard', AdminController.getDashboard);
+router.get('/jobs/ongoing', AdminController.getOngoingJobs);
 router.get('/users', AdminController.getUsers);
 router.get('/providers', AdminController.getProviders);
 router.get('/export/users', AdminController.exportUsers);
@@ -20,8 +22,13 @@ router.patch('/users/:id/toggle-status', AdminController.toggleUserStatus);
 router.delete('/users/:id', AdminController.deleteUser);
 router.get('/customer-contacts', AdminController.getCustomerContacts);
 router.get('/provider-activity', AdminController.getProviderActivity);
-router.get('/reports', AdminController.getReports);
-router.patch('/reports/:id/resolve', AdminController.resolveReport);
+
+// Support/complaints - a real two-way chat with the reporting user, not a
+// one-off notification list.
+router.get('/support/threads', SupportController.listThreads);
+router.get('/support/threads/:id', SupportController.getThread);
+router.post('/support/threads/:id/reply', SupportController.replyToThread);
+router.patch('/support/threads/:id/resolve', SupportController.resolveThread);
 
 
 

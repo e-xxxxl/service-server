@@ -9,6 +9,10 @@ const emailService = require('../services/emailService');
 const { notifyUser } = require('../services/notificationService');
 const { emitNewMessage } = require('../socket');
 
+// Platform commission is taken only from the workmanship portion of a
+// quote, never from materials or other costs.
+const PLATFORM_COMMISSION_RATE = 0.15;
+
 // Runs once a Paystack payment is confirmed successful, whichever of the
 // webhook or the /verify fallback gets there first. `transaction` must
 // already be the freshly-flipped ('pending' -> 'success') document — the
@@ -46,11 +50,18 @@ async function fulfillPayment(transaction) {
   conversation.contactUnlocked = true;
   conversation.lastMessageAt = new Date();
   conversation.providerUnread = true;
+  conversation.job = {
+    ...conversation.job,
+    deadline: message?.quote?.deadline || conversation.job?.deadline
+  };
   const saved = await conversation.save();
 
+  // Provider's wallet is credited the payout (total minus the platform's
+  // commission on workmanship), never the full customer-paid amount.
+  const providerPayout = transaction.providerPayout ?? transaction.amount;
   const provider = await ServiceProvider.findByIdAndUpdate(
     transaction.provider,
-    { $inc: { 'wallet.balance': transaction.amount, 'wallet.totalEarnings': transaction.amount } },
+    { $inc: { 'wallet.balance': providerPayout, 'wallet.totalEarnings': providerPayout } },
     { new: true }
   ).populate('user', 'fullName email');
 
@@ -64,7 +75,7 @@ async function fulfillPayment(transaction) {
     }),
     provider?.user
       ? notifyUser(provider.user._id, {
-          text: `💰 You've been paid ₦${transaction.amount.toLocaleString()}. It's now in your wallet.`,
+          text: `💰 You've been paid ₦${providerPayout.toLocaleString()}. It's now in your wallet.`,
           kind: 'success',
           relatedConversation: conversation._id
         })
@@ -97,7 +108,7 @@ async function fulfillPayment(transaction) {
       emailService.sendPaymentConfirmationEmail(provider.user, {
         isProvider: true,
         otherPartyName: customer?.fullName,
-        amount: transaction.amount,
+        amount: providerPayout,
         reference: transaction.reference
       })
     );
@@ -136,6 +147,13 @@ class PaymentController {
         return res.status(400).json({ success: false, message: 'Invalid quote amount' });
       }
 
+      // Platform commission is taken only from the workmanship portion,
+      // never from materials or other costs - the provider is reimbursed
+      // for those in full.
+      const workmanshipCost = message.quote.workmanshipCost || 0;
+      const platformCommission = Math.round(workmanshipCost * PLATFORM_COMMISSION_RATE);
+      const providerPayout = amount - platformCommission;
+
       const customer = await User.findById(userId);
       const reference = `PSK-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
 
@@ -154,6 +172,9 @@ class PaymentController {
         conversation: conversationId,
         messageId,
         amount,
+        workmanshipCost,
+        platformCommission,
+        providerPayout,
         status: 'pending',
         paystackData: {
           authorizationUrl: paystackData.authorization_url,

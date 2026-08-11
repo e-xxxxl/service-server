@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const emailService = require('../services/emailService');
 const passport = require('../config/passport');
 const { notifyAdminsOnSignup } = require('../services/schedulerService');
+const { isValidState, isValidLga } = require('../data/nigeriaLocations');
 
 class AuthController {
 
@@ -108,10 +109,24 @@ static async signup(req, res) {
 static async updateProfile(req, res) {
     try {
       const { fullName, phone, state, city } = req.body;
+
+      if (state && !isValidState(state)) {
+        return res.status(400).json({ success: false, message: 'Please select a valid Nigerian state' });
+      }
+      if (city && !isValidLga(state, city)) {
+        return res.status(400).json({ success: false, message: 'Please select a valid LGA/city for the selected state' });
+      }
+
+      const update = {};
+      if (fullName !== undefined) update.fullName = fullName;
+      if (phone !== undefined) update.phone = phone;
+      if (state !== undefined) update.state = state;
+      if (city !== undefined) update.city = city;
+
       const user = await User.findByIdAndUpdate(
         req.user.id,
-        { $set: { fullName, phone } },
-        { new: true }
+        { $set: update },
+        { new: true, runValidators: true }
       );
       res.json({ success: true, message: 'Profile updated', data: user });
     } catch (error) {

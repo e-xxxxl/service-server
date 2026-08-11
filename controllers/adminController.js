@@ -4,6 +4,7 @@ const User = require('../models/User');
 const ServiceProvider = require('../models/ServiceProvider');
 const Conversation = require('../models/Conversation');
 const Notification = require('../models/Notification');
+const Transaction = require('../models/Transaction');
 const JWTService = require('../config/jwt');
 const { notifyUser } = require('../services/notificationService');
 
@@ -29,6 +30,9 @@ class AdminController {
 // controllers/adminController.js - FIXED getDashboard with correct stats
 static async getDashboard(req, res) {
     try {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+
       const [
         totalVerifiedUsers,
         totalCustomers,
@@ -38,7 +42,9 @@ static async getDashboard(req, res) {
         pendingVerifications,
         approvedProviders,
         recentProviders,
-        recentUsers
+        recentUsers,
+        todayRevenueAgg,
+        ongoingJobsCount
       ] = await Promise.all([
         // ✅ Only verified users (email confirmed)
         User.countDocuments({ isEmailVerified: true, accountType: { $ne: 'admin' } }),
@@ -57,8 +63,16 @@ static async getDashboard(req, res) {
         ServiceProvider.find({ verificationStatus: { $in: ['submitted', 'approved', 'rejected'] } })
           .sort({ createdAt: -1 }).limit(5).populate('user', 'fullName email'),
         User.find({ isEmailVerified: true, accountType: { $ne: 'admin' } })
-          .sort({ createdAt: -1 }).limit(5)
+          .sort({ createdAt: -1 }).limit(5),
+        Transaction.aggregate([
+          { $match: { status: 'success', paidAt: { $gte: startOfToday } } },
+          { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+        ]),
+        Conversation.countDocuments({ bookingStatus: { $in: ['active', 'in_progress'] } })
       ]);
+
+      const todayRevenue = todayRevenueAgg[0]?.total || 0;
+      const todayPaymentsCount = todayRevenueAgg[0]?.count || 0;
 
       res.json({
         success: true,
@@ -70,7 +84,10 @@ static async getDashboard(req, res) {
             totalProviderDocs: totalProviderDocs,
             totalConversations,
             pendingVerifications,
-            verifiedProviders: approvedProviders
+            verifiedProviders: approvedProviders,
+            todayRevenue,
+            todayPaymentsCount,
+            ongoingJobsCount
           },
           recentProviders: recentProviders.map(p => ({
             id: p._id, companyName: p.companyName, fullName: p.user?.fullName,
@@ -84,8 +101,48 @@ static async getDashboard(req, res) {
           }))
         }
       });
-    } catch (error) { 
-      res.status(500).json({ success: false, message: error.message }); 
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  // GET /api/admin/jobs/ongoing
+  static async getOngoingJobs(req, res) {
+    try {
+      const { page = 1, limit = 20 } = req.query;
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const filter = { bookingStatus: { $in: ['active', 'in_progress'] } };
+
+      const [jobs, total] = await Promise.all([
+        Conversation.find(filter)
+          .sort({ lastMessageAt: -1 })
+          .skip(skip)
+          .limit(parseInt(limit))
+          .populate('customer', 'fullName email')
+          .populate({ path: 'professional', populate: { path: 'user', select: 'fullName email' } }),
+        Conversation.countDocuments(filter)
+      ]);
+
+      res.json({
+        success: true,
+        data: jobs.map(j => {
+          const paidMessage = [...j.messages].reverse().find(m => m.quote?.status === 'paid');
+          return {
+            id: j._id,
+            customerName: j.customer?.fullName || 'Customer',
+            providerName: j.professional?.user?.fullName || j.professional?.companyName || 'Provider',
+            serviceType: j.professional?.serviceType,
+            amount: paidMessage?.quote?.totalAmount || 0,
+            status: j.bookingStatus,
+            deadline: j.job?.deadline,
+            startedAt: j.job?.startedAt,
+            lastMessageAt: j.lastMessageAt
+          };
+        }),
+        pagination: { total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)), limit: parseInt(limit) }
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
     }
   }
 
@@ -496,21 +553,6 @@ static async exportUsers(req, res) {
       console.error('Export providers error:', error);
       res.status(500).json({ success: false, message: error.message }); 
     }
-  }
-  // ✅ Reports
-  static async getReports(req, res) {
-    try {
-      const reports = await Notification.find({ kind: 'report' }).sort({ createdAt: -1 }).limit(50).populate('user', 'fullName email');
-      res.json({ success: true, data: reports });
-    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
-  }
-
-  static async resolveReport(req, res) {
-    try {
-      const report = await Notification.findByIdAndUpdate(req.params.id, { read: true, kind: 'info' }, { new: true });
-      if (!report) return res.status(404).json({ success: false, message: 'Report not found' });
-      res.json({ success: true, message: 'Report resolved', data: report });
-    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
   }
 
   // ✅ Contacts

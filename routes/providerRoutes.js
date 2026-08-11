@@ -69,6 +69,8 @@ router.get('/messages/:conversationId/contact', ProviderController.getConversati
 // Jobs
 router.get('/jobs', ProviderController.getJobs);
 router.post('/jobs/:jobId/respond', ProviderController.respondToJob);
+router.post('/jobs/:conversationId/start', ProviderController.startJob);
+router.post('/jobs/:conversationId/complete', ProviderController.completeJob);
 
 // Notifications
 router.get('/notifications', ProviderController.getNotifications);

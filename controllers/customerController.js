@@ -371,24 +371,6 @@ static async acceptQuote(req, res) {
       res.status(500).json({ success: false, message: 'Failed to accept quote' });
     }
   }
-  // controllers/customerController.js - Add submitReport
-// controllers/customerController.js
-// controllers/customerController.js - Fix submitReport
-static async submitReport(req, res) {
-    try {
-      const { subject, message, type } = req.body;
-      const userId = req.user.id;
-
-      await notifyUser(userId, {
-        text: `📝 ${subject || type === 'complaint' ? 'Complaint' : 'Support Request'}: ${message?.substring(0, 100) || 'No details provided'}`,
-        kind: 'report'
-      });
-
-      res.json({ success: true, message: 'Report submitted successfully. Our team will review it shortly.' });
-    } catch (error) {
-      res.status(500).json({ success: false, message: 'Failed to submit report' });
-    }
-  }
 
   // POST /api/customer/favorites/:professionalId
   static async toggleFavorite(req, res) {
@@ -594,7 +576,9 @@ static async getMessages(req, res) {
           preview: last?.text || '',
           time: conv.lastMessageAt,
           unread: conv.customerUnread || false,
-          contactUnlocked: conv.contactUnlocked || false
+          contactUnlocked: conv.contactUnlocked || false,
+          bookingStatus: conv.bookingStatus || 'none',
+          job: conv.job || null
         };
       });
 
@@ -645,12 +629,6 @@ static async getConversation(req, res) {
       createdAt: msg.createdAt
     }));
 
-    console.log('📨 CUSTOMER getConversation →', messages.map(m => ({
-      type: m.messageType,
-      hasQuote: !!m.quote,
-      text: (m.text || '').substring(0, 40)
-    })));
-
     res.json({
       success: true,
       data: {
@@ -660,6 +638,8 @@ static async getConversation(req, res) {
         companyName: conversation.professional?.companyName,
         trade: conversation.professional?.serviceType,
         contactUnlocked: conversation.contactUnlocked || false,
+        bookingStatus: conversation.bookingStatus || 'none',
+        job: conversation.job || null,
         messages
       }
     });

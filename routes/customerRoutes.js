@@ -27,8 +27,6 @@ router.get('/provider/:id', CustomerController.getProviderProfile);
 // Notifications
 router.get('/notifications', CustomerController.getNotifications);
 router.patch('/notifications/:id/read', CustomerController.markNotificationRead);
-// routes/customerRoutes.js - Add report route
-router.post('/report', CustomerController.submitReport);
 
 router.post('/accept-quote/:conversationId/:messageId', CustomerController.acceptQuote);
 router.post('/reject-quote/:conversationId/:messageId', CustomerController.rejectQuote);

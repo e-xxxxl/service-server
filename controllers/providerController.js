@@ -318,13 +318,13 @@ static async resubmitVerification(req, res) {
 static async sendQuote(req, res) {
     try {
       const { customerId } = req.params;
-      const { serviceDescription, materials, laborCost, materialCost, additionalFees } = req.body;
+      const { serviceDescription, materials, workmanshipCost, materialCost, otherCosts, deadline } = req.body;
       const userId = req.user.id;
 
       const provider = await ServiceProvider.findOne({ user: userId });
       if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
 
-      const totalAmount = (Number(laborCost) || 0) + (Number(materialCost) || 0) + (Number(additionalFees) || 0);
+      const totalAmount = (Number(workmanshipCost) || 0) + (Number(materialCost) || 0) + (Number(otherCosts) || 0);
       if (totalAmount <= 0) return res.status(400).json({ success: false, message: 'Total amount must be greater than zero' });
 
       let conversation = await Conversation.findOne({ customer: customerId, professional: provider._id });
@@ -341,12 +341,13 @@ static async sendQuote(req, res) {
         quote: {
           serviceDescription: serviceDescription || '',
           materials: materials || '',
-          laborCost: Number(laborCost) || 0,
+          workmanshipCost: Number(workmanshipCost) || 0,
           materialCost: Number(materialCost) || 0,
-          additionalFees: Number(additionalFees) || 0,
+          otherCosts: Number(otherCosts) || 0,
           totalAmount: totalAmount,
           currency: 'NGN',
           validUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          deadline: deadline ? new Date(deadline) : undefined,
           status: 'pending'
         },
         read: false,
@@ -452,6 +453,8 @@ static async getMessages(req, res) {
         time: conv.lastMessageAt,
         unread: conv.providerUnread || false,
         contactUnlocked: conv.contactUnlocked || false,
+        bookingStatus: conv.bookingStatus || 'none',
+        job: conv.job || null,
         // ✅ Map messages and ensure all fields are included
         messages: (conv.messages || []).map(m => ({
           _id: m._id?.toString(),
@@ -467,12 +470,6 @@ static async getMessages(req, res) {
           createdAt: m.createdAt || new Date()
         }))
       }));
-
-      console.log('✅ Provider messages:', formattedConversations.map(c => ({
-        id: c.id,
-        msgCount: c.messages.length,
-        types: c.messages.map(m => m.messageType)
-      })));
 
       res.json({ success: true, data: formattedConversations });
     } catch (error) {
@@ -586,6 +583,103 @@ static async sendMessage(req, res) {
   // POST /api/provider/jobs/:jobId/respond
   static async respondToJob(req, res) { res.json({ success: true, message: 'Response recorded' }); }
 
+  // POST /api/provider/jobs/:conversationId/start
+  static async startJob(req, res) {
+    try {
+      const { conversationId } = req.params;
+      const provider = await ServiceProvider.findOne({ user: req.user.id });
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      const conversation = await Conversation.findOne({ _id: conversationId, professional: provider._id });
+      if (!conversation) return res.status(404).json({ success: false, message: 'Job not found' });
+      if (conversation.bookingStatus !== 'active') {
+        return res.status(400).json({ success: false, message: 'This job cannot be started yet - payment must be confirmed first' });
+      }
+
+      conversation.bookingStatus = 'in_progress';
+      conversation.job = { ...conversation.job, startedAt: new Date() };
+      conversation.messages.push({
+        sender: req.user.id,
+        senderModel: 'ServiceProvider',
+        text: `🔧 ${provider.companyName} started work on this job.`,
+        messageType: 'job_started',
+        createdAt: new Date()
+      });
+      conversation.lastMessageAt = new Date();
+      conversation.customerUnread = true;
+      const saved = await conversation.save();
+
+      await notifyUser(conversation.customer, {
+        text: `🔧 ${provider.companyName} has started work on your job.`,
+        kind: 'success',
+        relatedConversation: conversation._id
+      });
+
+      const savedMessage = saved.messages[saved.messages.length - 1].toObject();
+      emitNewMessage({
+        conversationId: conversation._id,
+        recipientUserId: conversation.customer,
+        message: { ...savedMessage, senderName: provider.companyName },
+        senderName: provider.companyName
+      });
+
+      res.json({ success: true, message: 'Job marked as started', data: { startedAt: conversation.job.startedAt } });
+    } catch (error) {
+      console.error('Start job error:', error);
+      res.status(500).json({ success: false, message: 'Failed to start job' });
+    }
+  }
+
+  // POST /api/provider/jobs/:conversationId/complete
+  static async completeJob(req, res) {
+    try {
+      const { conversationId } = req.params;
+      const provider = await ServiceProvider.findOne({ user: req.user.id });
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      const conversation = await Conversation.findOne({ _id: conversationId, professional: provider._id });
+      if (!conversation) return res.status(404).json({ success: false, message: 'Job not found' });
+      if (!['active', 'in_progress'].includes(conversation.bookingStatus)) {
+        return res.status(400).json({ success: false, message: 'This job cannot be marked complete from its current status' });
+      }
+
+      conversation.bookingStatus = 'completed';
+      conversation.job = { ...conversation.job, completedAt: new Date() };
+      conversation.messages.push({
+        sender: req.user.id,
+        senderModel: 'ServiceProvider',
+        text: `✅ ${provider.companyName} marked this job as completed.`,
+        messageType: 'job_completed',
+        createdAt: new Date()
+      });
+      conversation.lastMessageAt = new Date();
+      conversation.customerUnread = true;
+      const saved = await conversation.save();
+
+      await Promise.all([
+        notifyUser(conversation.customer, {
+          text: `✅ ${provider.companyName} marked your job as completed.`,
+          kind: 'success',
+          relatedConversation: conversation._id
+        }),
+        ServiceProvider.findByIdAndUpdate(provider._id, { $inc: { completedJobs: 1 } })
+      ]);
+
+      const savedMessage = saved.messages[saved.messages.length - 1].toObject();
+      emitNewMessage({
+        conversationId: conversation._id,
+        recipientUserId: conversation.customer,
+        message: { ...savedMessage, senderName: provider.companyName },
+        senderName: provider.companyName
+      });
+
+      res.json({ success: true, message: 'Job marked as completed', data: { completedAt: conversation.job.completedAt } });
+    } catch (error) {
+      console.error('Complete job error:', error);
+      res.status(500).json({ success: false, message: 'Failed to mark job as completed' });
+    }
+  }
+
   // GET /api/provider/messages - ONLY ONE VERSION
 //   static async getMessages(req, res) {
 //     try {
@@ -694,7 +788,9 @@ static async sendMessage(req, res) {
         data: transactions.map(t => ({
           id: t._id.toString(),
           reference: t.reference,
-          amount: t.amount,
+          amount: t.providerPayout ?? t.amount, // what actually landed in the wallet, after platform commission
+          grossAmount: t.amount, // what the customer paid, for transparency
+          platformCommission: t.platformCommission || 0,
           currency: t.currency,
           customerName: t.customer?.fullName || 'Customer',
           conversationId: t.conversation,
