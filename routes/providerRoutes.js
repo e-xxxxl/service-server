@@ -15,10 +15,20 @@ const uploadSelfie = multer({
   limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-// Combined upload for profile setup
+// Combined upload for profile setup - verification documents (NIN, selfie)
+// must be PNG. Client-side <input accept> is a UX hint only, so this
+// fileFilter is what actually enforces it.
 const uploadProfileSetup = multer({
   storage: multer.diskStorage({}), // Temporary, we'll handle per-field
-  limits: { fileSize: 5 * 1024 * 1024 }
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype !== 'image/png') {
+      const err = new Error('Only PNG images are accepted for verification documents');
+      err.statusCode = 400;
+      return cb(err);
+    }
+    cb(null, true);
+  }
 });
 
 router.use(protect);
