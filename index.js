@@ -6,6 +6,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const connectDB = require('./config/database');
+const { isOriginAllowed } = require('./config/corsOrigins');
 const { initializeSocket } = require('./socket');
 
 const authRoutes = require('./routes/authRoutes');
@@ -24,13 +25,26 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
 
+// Render sits in front of this app as a single reverse-proxy hop, setting
+// X-Forwarded-For on every request. Without telling Express to trust that
+// one hop, req.ip falls back to Render's internal proxy address for every
+// request - meaning express-rate-limit (see middleware/rateLimiter.js,
+// which keys on req.ip) would bucket every visitor behind the proxy under
+// the same "IP", so one user's login attempts could lock out others
+// sharing nothing but the same edge proxy. `1` = trust exactly one hop,
+// not arbitrary client-supplied values further down the chain.
+app.set('trust proxy', 1);
+
 // Initialize Socket.io
 const io = initializeSocket(server);
 
 // Middleware
 app.use(helmet());
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
+  origin: (origin, callback) => {
+    if (isOriginAllowed(origin)) return callback(null, true);
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
 

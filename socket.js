@@ -2,13 +2,17 @@
 const { Server } = require('socket.io');
 const JWTService = require('./config/jwt');
 const User = require('./models/User');
+const { isOriginAllowed } = require('./config/corsOrigins');
 
 let io;
 
 function initializeSocket(server) {
   io = new Server(server, {
     cors: {
-      origin: process.env.CLIENT_URL || 'http://localhost:3000',
+      origin: (origin, callback) => {
+        if (isOriginAllowed(origin)) return callback(null, true);
+        callback(new Error('Not allowed by CORS'));
+      },
       methods: ['GET', 'POST']
     }
   });
