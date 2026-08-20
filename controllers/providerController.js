@@ -6,6 +6,9 @@ const Notification = require('../models/Notification');
 const MessageFilter = require('../middleware/messageFilter');
 const { isValidState, isValidLga } = require('../data/nigeriaLocations');
 const Transaction = require('../models/Transaction');
+const Withdrawal = require('../models/Withdrawal');
+const paystackService = require('../services/paystackService');
+const emailService = require('../services/emailService');
 const { notifyUser } = require('../services/notificationService');
 const { emitNewMessage } = require('../socket');
 
@@ -897,7 +900,7 @@ static async sendMessage(req, res) {
   // GET /api/provider/wallet
   static async getWallet(req, res) {
     try {
-      const provider = await ServiceProvider.findOne({ user: req.user.id }).select('wallet');
+      const provider = await ServiceProvider.findOne({ user: req.user.id }).select('wallet bankDetails');
       if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
 
       res.json({
@@ -905,12 +908,158 @@ static async sendMessage(req, res) {
         data: {
           balance: provider.wallet?.balance || 0,
           totalEarnings: provider.wallet?.totalEarnings || 0,
-          pendingEarnings: provider.wallet?.pendingEarnings || 0
+          pendingEarnings: provider.wallet?.pendingEarnings || 0,
+          bankDetails: provider.bankDetails?.verifiedAt ? {
+            bankName: provider.bankDetails.bankName,
+            accountNumber: provider.bankDetails.accountNumber,
+            accountName: provider.bankDetails.accountName,
+            whatsappNumber: provider.bankDetails.whatsappNumber
+          } : null
         }
       });
     } catch (error) {
       console.error('Get wallet error:', error);
       res.status(500).json({ success: false, message: 'Failed to load wallet' });
+    }
+  }
+
+  // GET /api/provider/banks
+  static async getBanks(req, res) {
+    try {
+      const banks = await paystackService.listBanks();
+      res.json({ success: true, data: banks });
+    } catch (error) {
+      console.error('Get banks error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load bank list' });
+    }
+  }
+
+  // POST /api/provider/bank-details
+  static async saveBankDetails(req, res) {
+    try {
+      const { bankCode, accountNumber, whatsappNumber } = req.body;
+      if (!bankCode || !accountNumber?.trim() || !whatsappNumber?.trim()) {
+        return res.status(400).json({ success: false, message: 'Bank, account number, and WhatsApp number are all required' });
+      }
+
+      const banks = await paystackService.listBanks();
+      const bank = banks.find(b => b.code === bankCode);
+      if (!bank) return res.status(400).json({ success: false, message: 'Invalid bank selected' });
+
+      let resolved;
+      try {
+        resolved = await paystackService.resolveAccountNumber({ accountNumber: accountNumber.trim(), bankCode });
+      } catch (err) {
+        return res.status(400).json({ success: false, message: err.message || 'Could not verify this account number' });
+      }
+
+      const provider = await ServiceProvider.findOneAndUpdate(
+        { user: req.user.id },
+        {
+          bankDetails: {
+            bankCode,
+            bankName: bank.name,
+            accountNumber: accountNumber.trim(),
+            accountName: resolved.account_name,
+            whatsappNumber: whatsappNumber.trim(),
+            verifiedAt: new Date()
+          }
+        },
+        { new: true }
+      );
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      res.json({ success: true, message: 'Bank details verified and saved', data: provider.bankDetails });
+    } catch (error) {
+      console.error('Save bank details error:', error);
+      res.status(500).json({ success: false, message: 'Failed to save bank details' });
+    }
+  }
+
+  // POST /api/provider/withdrawals
+  static async requestWithdrawal(req, res) {
+    try {
+      const provider = await ServiceProvider.findOne({ user: req.user.id });
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      if (!provider.bankDetails?.verifiedAt) {
+        return res.status(400).json({ success: false, message: 'Add and verify your bank details before requesting a withdrawal' });
+      }
+
+      const amount = Number(req.body.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({ success: false, message: 'Enter a valid withdrawal amount' });
+      }
+      if (amount > (provider.wallet?.balance || 0)) {
+        return res.status(400).json({ success: false, message: 'Withdrawal amount exceeds your available balance' });
+      }
+
+      // Reserve the funds immediately so the same balance can't be
+      // requested twice while this is pending - the balance floor in the
+      // filter makes this atomic against concurrent withdrawal requests.
+      const reserved = await ServiceProvider.findOneAndUpdate(
+        { _id: provider._id, 'wallet.balance': { $gte: amount } },
+        { $inc: { 'wallet.balance': -amount } },
+        { new: true }
+      );
+      if (!reserved) {
+        return res.status(400).json({ success: false, message: 'Withdrawal amount exceeds your available balance' });
+      }
+
+      const withdrawal = await Withdrawal.create({
+        provider: provider._id,
+        amount,
+        bankSnapshot: {
+          bankName: provider.bankDetails.bankName,
+          accountNumber: provider.bankDetails.accountNumber,
+          accountName: provider.bankDetails.accountName,
+          whatsappNumber: provider.bankDetails.whatsappNumber
+        }
+      });
+
+      const user = await User.findById(req.user.id);
+      try {
+        const adminEmail = process.env.ADMIN_EMAIL || 'admin@9jatradiespages.com';
+        await emailService.sendWithdrawalRequestedEmail(adminEmail, {
+          providerName: user?.fullName || provider.companyName,
+          companyName: provider.companyName,
+          amount,
+          bankDetails: withdrawal.bankSnapshot
+        });
+      } catch (emailError) {
+        console.error('Withdrawal requested email error:', emailError);
+      }
+
+      res.status(201).json({ success: true, message: 'Withdrawal requested', data: { id: withdrawal._id, amount, status: withdrawal.status } });
+    } catch (error) {
+      console.error('Request withdrawal error:', error);
+      res.status(500).json({ success: false, message: 'Failed to request withdrawal' });
+    }
+  }
+
+  // GET /api/provider/withdrawals
+  static async getMyWithdrawals(req, res) {
+    try {
+      const provider = await ServiceProvider.findOne({ user: req.user.id });
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      const withdrawals = await Withdrawal.find({ provider: provider._id }).sort({ createdAt: -1 });
+      res.json({
+        success: true,
+        data: withdrawals.map(w => ({
+          id: w._id,
+          amount: w.amount,
+          status: w.status,
+          rejectionReason: w.rejectionReason || null,
+          receiptUrl: w.receiptUrl || null,
+          bankSnapshot: w.bankSnapshot,
+          requestedAt: w.createdAt,
+          resolvedAt: w.resolvedAt || null
+        }))
+      });
+    } catch (error) {
+      console.error('Get withdrawals error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load withdrawals' });
     }
   }
 

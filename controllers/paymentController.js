@@ -18,6 +18,13 @@ const PLATFORM_COMMISSION_RATE = 0.15;
 // needs to be re-derived when that happens.
 const COMMISSION_ENABLED = false;
 
+// Escrow split: materials/other costs release to the wallet in full as
+// soon as payment is confirmed. Workmanship (after commission) only
+// releases 60% now - the remaining 40% is held per-transaction and only
+// moves into the wallet once the customer confirms that specific job
+// completed (see customerController.confirmJobCompletion).
+const WORKMANSHIP_IMMEDIATE_RELEASE_RATE = 0.6;
+
 // Runs once a Paystack payment is confirmed successful, whichever of the
 // webhook or the /verify fallback gets there first. `transaction` must
 // already be the freshly-flipped ('pending' -> 'success') document — the
@@ -62,15 +69,36 @@ async function fulfillPayment(transaction) {
   const saved = await conversation.save();
 
   // Provider's wallet is credited the payout (total minus the platform's
-  // commission on workmanship), never the full customer-paid amount.
-  const providerPayout = transaction.providerPayout ?? transaction.amount;
+  // commission on workmanship), never the full customer-paid amount - and
+  // split between what's withdrawable now vs. held until job completion.
+  const workmanshipCost = transaction.workmanshipCost || 0;
+  const platformCommission = transaction.platformCommission || 0;
+  const materialsPortion = transaction.amount - workmanshipCost;
+  const workmanshipAfterCommission = workmanshipCost - platformCommission;
+  const workmanshipReleaseNow = Math.round(workmanshipAfterCommission * WORKMANSHIP_IMMEDIATE_RELEASE_RATE);
+  const workmanshipHeld = workmanshipAfterCommission - workmanshipReleaseNow;
+  const immediateRelease = materialsPortion + workmanshipReleaseNow;
+  const providerPayout = transaction.providerPayout ?? (materialsPortion + workmanshipAfterCommission);
+
+  await Transaction.findByIdAndUpdate(transaction._id, { workmanshipHeld });
+
   const provider = await ServiceProvider.findByIdAndUpdate(
     transaction.provider,
-    { $inc: { 'wallet.balance': providerPayout, 'wallet.totalEarnings': providerPayout } },
+    {
+      $inc: {
+        'wallet.balance': immediateRelease,
+        'wallet.pendingEarnings': workmanshipHeld,
+        'wallet.totalEarnings': providerPayout
+      }
+    },
     { new: true }
   ).populate('user', 'fullName email');
 
   const customer = await User.findById(transaction.customer);
+
+  const providerEarningsText = workmanshipHeld > 0
+    ? `💰 You've been paid ₦${providerPayout.toLocaleString()}. ₦${immediateRelease.toLocaleString()} is available to withdraw now, and ₦${workmanshipHeld.toLocaleString()} (40% of workmanship) unlocks once the customer confirms the job is complete.`
+    : `💰 You've been paid ₦${providerPayout.toLocaleString()}. It's now in your wallet.`;
 
   await Promise.all([
     notifyUser(transaction.customer, {
@@ -80,7 +108,7 @@ async function fulfillPayment(transaction) {
     }),
     provider?.user
       ? notifyUser(provider.user._id, {
-          text: `💰 You've been paid ₦${providerPayout.toLocaleString()}. It's now in your wallet.`,
+          text: providerEarningsText,
           kind: 'success',
           relatedConversation: conversation._id
         })

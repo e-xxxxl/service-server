@@ -15,15 +15,23 @@ const uploadSelfie = multer({
   limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-// Combined upload for profile setup - verification documents (NIN, selfie)
-// must be PNG. Client-side <input accept> is a UX hint only, so this
-// fileFilter is what actually enforces it.
+// Combined upload for profile setup - the selfie must be a PNG photo, but
+// the NIN document is commonly a scanned PDF slip, so that field also
+// accepts application/pdf. Client-side <input accept> is a UX hint only,
+// this fileFilter is what actually enforces it.
 const uploadProfileSetup = multer({
   storage: multer.diskStorage({}), // Temporary, we'll handle per-field
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype !== 'image/png') {
-      const err = new Error('Only PNG images are accepted for verification documents');
+    const allowed = file.fieldname === 'ninDocument'
+      ? ['image/png', 'application/pdf']
+      : ['image/png'];
+    if (!allowed.includes(file.mimetype)) {
+      const err = new Error(
+        file.fieldname === 'ninDocument'
+          ? 'NIN document must be a PNG image or a PDF'
+          : 'Selfie photo must be a PNG image'
+      );
       err.statusCode = 400;
       return cb(err);
     }
@@ -70,6 +78,10 @@ router.patch('/availability', ProviderController.updateAvailability);
 // Wallet
 router.get('/wallet', ProviderController.getWallet);
 router.get('/transactions', ProviderController.getTransactions);
+router.get('/banks', ProviderController.getBanks);
+router.post('/bank-details', ProviderController.saveBankDetails);
+router.post('/withdrawals', ProviderController.requestWithdrawal);
+router.get('/withdrawals', ProviderController.getMyWithdrawals);
 
 // Messages
 router.get('/messages', ProviderController.getMessages);

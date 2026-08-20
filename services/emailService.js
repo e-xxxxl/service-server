@@ -504,6 +504,116 @@ const sendNewProviderSubmissionEmail = async (adminEmail, provider) => {
   });
 };
 
+// -----------------------------------------------------------------------
+// Withdrawal Requested Email (to admin)
+// -----------------------------------------------------------------------
+
+const getWithdrawalRequestedEmailTemplate = ({ providerName, companyName, amount, bankDetails }) => {
+  const adminUrl = `${process.env.CLIENT_URL}/admin/dashboard`;
+
+  const body = `
+    ${eyebrow('Withdrawal Requested')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      ₦${amount.toLocaleString()} withdrawal requested
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      <strong>${companyName || providerName}</strong> (${providerName}) has requested a withdrawal. Review and approve or reject it from the admin dashboard.
+    </p>
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f7f8fa; border: 1px solid ${BORDER}; border-radius: 8px; margin: 0 0 28px 0;">
+      <tr><td style="padding: 16px 18px; font-size: 14px; line-height: 1.9; color: ${INK_SOFT};">
+        <strong style="color: ${INK};">Amount:</strong> ₦${amount.toLocaleString()}<br />
+        <strong style="color: ${INK};">Bank:</strong> ${bankDetails?.bankName || 'N/A'}<br />
+        <strong style="color: ${INK};">Account number:</strong> ${bankDetails?.accountNumber || 'N/A'}<br />
+        <strong style="color: ${INK};">Account name:</strong> ${bankDetails?.accountName || 'N/A'}<br />
+        <strong style="color: ${INK};">WhatsApp:</strong> ${bankDetails?.whatsappNumber || 'N/A'}
+      </td></tr>
+    </table>
+
+    ${button(adminUrl, 'Review withdrawal')}
+  `;
+
+  return emailShell(`${companyName || providerName} requested a ₦${amount.toLocaleString()} withdrawal.`, body);
+};
+
+const sendWithdrawalRequestedEmail = async (adminEmail, data) => {
+  const html = getWithdrawalRequestedEmailTemplate(data);
+  return sendEmail({
+    to: adminEmail,
+    subject: `Withdrawal Requested: ₦${data.amount.toLocaleString()} - ${data.companyName || data.providerName}`,
+    html
+  });
+};
+
+// -----------------------------------------------------------------------
+// Withdrawal Approved Email (to provider)
+// -----------------------------------------------------------------------
+
+const getWithdrawalApprovedEmailTemplate = (user, { amount, receiptUrl }) => {
+  const firstName = user.fullName?.split(' ')[0] || 'there';
+  const walletUrl = `${process.env.CLIENT_URL}/provider-dashboard`;
+
+  const body = `
+    ${eyebrow('Withdrawal Approved')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      Your withdrawal is on its way, ${firstName}
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      Your withdrawal request for <strong>₦${amount.toLocaleString()}</strong> has been approved and sent to your bank account.
+    </p>
+
+    ${receiptUrl ? button(receiptUrl, 'View receipt') : ''}
+    ${button(walletUrl, 'View your wallet')}
+
+    ${note('It can take a little while to reflect depending on your bank. If it hasn\'t arrived after a day or two, reply to this email.')}
+  `;
+
+  return emailShell(`Your ₦${amount.toLocaleString()} withdrawal has been approved.`, body);
+};
+
+const sendWithdrawalApprovedEmail = async (user, data) => {
+  const html = getWithdrawalApprovedEmailTemplate(user, data);
+  return sendEmail({
+    to: user.email,
+    subject: `Withdrawal Approved: ₦${data.amount.toLocaleString()}`,
+    html
+  });
+};
+
+// -----------------------------------------------------------------------
+// Withdrawal Rejected Email (to provider)
+// -----------------------------------------------------------------------
+
+const getWithdrawalRejectedEmailTemplate = (user, { amount, reason }) => {
+  const firstName = user.fullName?.split(' ')[0] || 'there';
+  const walletUrl = `${process.env.CLIENT_URL}/provider-dashboard`;
+
+  const body = `
+    ${eyebrow('Withdrawal Rejected')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      Your withdrawal request needs attention
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      Hi ${firstName}, your withdrawal request for <strong>₦${amount.toLocaleString()}</strong> was not approved. The amount has been returned to your available balance.
+    </p>
+
+    ${note(`<strong>Reason:</strong> ${reason || 'Not specified'}`, 'warning')}
+
+    ${button(walletUrl, 'Go to your wallet')}
+  `;
+
+  return emailShell(`Your ₦${amount.toLocaleString()} withdrawal was not approved.`, body);
+};
+
+const sendWithdrawalRejectedEmail = async (user, data) => {
+  const html = getWithdrawalRejectedEmailTemplate(user, data);
+  return sendEmail({
+    to: user.email,
+    subject: `Withdrawal Rejected: ₦${data.amount.toLocaleString()}`,
+    html
+  });
+};
+
 module.exports = {
   sendEmail,
   sendVerificationEmail,
@@ -513,13 +623,19 @@ module.exports = {
   sendRejectionEmail,        // ✅ NEW
   sendNewProviderSubmissionEmail, // ✅ NEW
   sendPaymentConfirmationEmail,
+  sendWithdrawalRequestedEmail,
+  sendWithdrawalApprovedEmail,
+  sendWithdrawalRejectedEmail,
   getVerificationEmailTemplate,
   getWelcomeEmailTemplate,
   getResetPasswordEmailTemplate,
   getProviderApprovalEmailTemplate,
   getProviderRejectionEmailTemplate,
   getNewProviderSubmissionEmailTemplate,
-  getPaymentConfirmationEmailTemplate
+  getPaymentConfirmationEmailTemplate,
+  getWithdrawalRequestedEmailTemplate,
+  getWithdrawalApprovedEmailTemplate,
+  getWithdrawalRejectedEmailTemplate
 };
 
 // module.exports = {

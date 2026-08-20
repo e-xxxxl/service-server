@@ -141,10 +141,25 @@ const serviceProviderSchema = new mongoose.Schema({
   completedJobs: { type: Number, default: 0 },
   isAvailable: { type: Boolean, default: true },
   profileCompletionScore: { type: Number, default: 0 },
+  // balance: withdrawable right now (materials/other released in full on
+  // payment, workmanship released 60% on payment). totalEarnings: lifetime
+  // total ever earned, never decreases. pendingEarnings: the held 40%
+  // workmanship slice(s) not yet released - moves into balance per-job once
+  // the customer confirms that job completed (see Transaction.workmanshipHeld).
   wallet: {
     balance: { type: Number, default: 0 },
     totalEarnings: { type: Number, default: 0 },
     pendingEarnings: { type: Number, default: 0 }
+  },
+  // Verified once via Paystack's account-resolve API so the account name is
+  // confirmed to match before any withdrawal can be requested against it.
+  bankDetails: {
+    bankCode: String,
+    bankName: String,
+    accountNumber: String,
+    accountName: String,
+    whatsappNumber: String,
+    verifiedAt: Date
   },
   // Add inside serviceProviderSchema (near the other fields)
 reminderSent1hr: { type: Boolean, default: false },

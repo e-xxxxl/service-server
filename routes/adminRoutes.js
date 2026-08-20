@@ -1,9 +1,18 @@
 // routes/adminRoutes.js - COMPLETE
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
 const AdminController = require('../controllers/adminController');
 const SupportController = require('../controllers/supportController');
 const { protect, authorize } = require('../middleware/auth');
+
+// Withdrawal receipts go to local temp disk first, then get forwarded to
+// Cloudinary (see ProviderController.uploadToCloudinary), same pattern as
+// the NIN/selfie uploads in providerRoutes.js.
+const uploadReceipt = multer({
+  storage: multer.diskStorage({}),
+  limits: { fileSize: 5 * 1024 * 1024 }
+});
 
 router.post('/login', AdminController.login);
 router.use(protect);
@@ -22,6 +31,11 @@ router.patch('/users/:id/toggle-status', AdminController.toggleUserStatus);
 router.delete('/users/:id', AdminController.deleteUser);
 router.get('/customer-contacts', AdminController.getCustomerContacts);
 router.get('/provider-activity', AdminController.getProviderActivity);
+
+// Withdrawals
+router.get('/withdrawals', AdminController.getWithdrawals);
+router.patch('/withdrawals/:id/approve', uploadReceipt.single('receipt'), AdminController.approveWithdrawal);
+router.patch('/withdrawals/:id/reject', AdminController.rejectWithdrawal);
 
 // Support/complaints - a real two-way chat with the reporting user, not a
 // one-off notification list.

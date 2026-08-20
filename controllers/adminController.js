@@ -5,7 +5,10 @@ const ServiceProvider = require('../models/ServiceProvider');
 const Conversation = require('../models/Conversation');
 const Notification = require('../models/Notification');
 const Transaction = require('../models/Transaction');
+const Withdrawal = require('../models/Withdrawal');
 const JWTService = require('../config/jwt');
+const emailService = require('../services/emailService');
+const ProviderController = require('./providerController');
 const { notifyUser } = require('../services/notificationService');
 
 class AdminController {
@@ -44,7 +47,10 @@ static async getDashboard(req, res) {
         recentProviders,
         recentUsers,
         todayRevenueAgg,
-        ongoingJobsCount
+        ongoingJobsCount,
+        allTimeRevenueAgg,
+        totalProviderBalanceAgg,
+        pendingWithdrawalsCount
       ] = await Promise.all([
         // ✅ Only verified users (email confirmed)
         User.countDocuments({ isEmailVerified: true, accountType: { $ne: 'admin' } }),
@@ -68,11 +74,28 @@ static async getDashboard(req, res) {
           { $match: { status: 'success', paidAt: { $gte: startOfToday } } },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
         ]),
-        Conversation.countDocuments({ bookingStatus: { $in: ['active', 'in_progress'] } })
+        Conversation.countDocuments({ bookingStatus: { $in: ['active', 'in_progress'] } }),
+        // All-time gross payment volume - not scoped to today, unlike todayRevenueAgg above.
+        Transaction.aggregate([
+          { $match: { status: 'success' } },
+          { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+        ]),
+        // Total net balance the platform currently owes across every
+        // provider's wallet - available (withdrawable now) plus pending
+        // (held workmanship not yet released).
+        ServiceProvider.aggregate([
+          { $group: { _id: null, available: { $sum: '$wallet.balance' }, pending: { $sum: '$wallet.pendingEarnings' } } }
+        ]),
+        Withdrawal.countDocuments({ status: 'pending' })
       ]);
 
       const todayRevenue = todayRevenueAgg[0]?.total || 0;
       const todayPaymentsCount = todayRevenueAgg[0]?.count || 0;
+      const allTimeRevenue = allTimeRevenueAgg[0]?.total || 0;
+      const allTimePaymentsCount = allTimeRevenueAgg[0]?.count || 0;
+      const totalProviderBalanceAvailable = totalProviderBalanceAgg[0]?.available || 0;
+      const totalProviderBalanceHeld = totalProviderBalanceAgg[0]?.pending || 0;
+      const totalProviderBalanceNet = totalProviderBalanceAvailable + totalProviderBalanceHeld;
 
       res.json({
         success: true,
@@ -87,6 +110,12 @@ static async getDashboard(req, res) {
             verifiedProviders: approvedProviders,
             todayRevenue,
             todayPaymentsCount,
+            allTimeRevenue,
+            allTimePaymentsCount,
+            totalProviderBalanceAvailable,
+            totalProviderBalanceHeld,
+            totalProviderBalanceNet,
+            pendingWithdrawalsCount,
             ongoingJobsCount
           },
           recentProviders: recentProviders.map(p => ({
@@ -594,6 +623,131 @@ static async exportUsers(req, res) {
   static async deleteAdmin(req, res) {
     try { await Admin.findByIdAndDelete(req.params.id); res.json({ success: true, message: 'Admin deleted' }); }
     catch (error) { res.status(500).json({ success: false, message: error.message }); }
+  }
+
+  // GET /api/admin/withdrawals
+  static async getWithdrawals(req, res) {
+    try {
+      const { status } = req.query;
+      const filter = {};
+      if (status && status !== 'all') filter.status = status;
+
+      const withdrawals = await Withdrawal.find(filter)
+        .sort({ createdAt: -1 })
+        .limit(200)
+        .populate({
+          path: 'provider',
+          select: 'companyName',
+          populate: { path: 'user', select: 'fullName email' }
+        })
+        .populate('resolvedBy', 'fullName');
+
+      res.json({
+        success: true,
+        data: withdrawals.map(w => ({
+          id: w._id,
+          providerId: w.provider?._id,
+          providerName: w.provider?.user?.fullName || w.provider?.companyName || 'Provider',
+          companyName: w.provider?.companyName,
+          providerEmail: w.provider?.user?.email,
+          amount: w.amount,
+          bankSnapshot: w.bankSnapshot,
+          status: w.status,
+          rejectionReason: w.rejectionReason || null,
+          receiptUrl: w.receiptUrl || null,
+          resolvedBy: w.resolvedBy?.fullName || null,
+          resolvedAt: w.resolvedAt || null,
+          requestedAt: w.createdAt
+        }))
+      });
+    } catch (error) {
+      console.error('Get withdrawals error:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  // PATCH /api/admin/withdrawals/:id/approve (multipart, field name "receipt")
+  static async approveWithdrawal(req, res) {
+    try {
+      const withdrawal = await Withdrawal.findOne({ _id: req.params.id, status: 'pending' });
+      if (!withdrawal) return res.status(404).json({ success: false, message: 'Pending withdrawal not found' });
+      if (!req.file) return res.status(400).json({ success: false, message: 'A receipt file is required to approve a withdrawal' });
+
+      const upload = await ProviderController.uploadToCloudinary(req.file, 'withdrawal-receipts');
+
+      withdrawal.status = 'approved';
+      withdrawal.receiptUrl = upload.secure_url;
+      withdrawal.resolvedBy = req.user.id;
+      withdrawal.resolvedAt = new Date();
+      await withdrawal.save();
+
+      const provider = await ServiceProvider.findById(withdrawal.provider).populate('user', 'fullName email');
+      if (provider?.user) {
+        await notifyUser(provider.user._id, {
+          text: `✅ Your withdrawal of ₦${withdrawal.amount.toLocaleString()} has been approved and sent.`,
+          kind: 'success'
+        });
+        try {
+          await emailService.sendWithdrawalApprovedEmail(provider.user, {
+            amount: withdrawal.amount,
+            receiptUrl: withdrawal.receiptUrl
+          });
+        } catch (emailError) {
+          console.error('Withdrawal approved email error:', emailError);
+        }
+      }
+
+      res.json({ success: true, message: 'Withdrawal approved', data: { id: withdrawal._id, status: withdrawal.status, receiptUrl: withdrawal.receiptUrl } });
+    } catch (error) {
+      console.error('Approve withdrawal error:', error);
+      res.status(500).json({ success: false, message: 'Failed to approve withdrawal' });
+    }
+  }
+
+  // PATCH /api/admin/withdrawals/:id/reject
+  static async rejectWithdrawal(req, res) {
+    try {
+      const { reason } = req.body;
+      if (!reason?.trim()) {
+        return res.status(400).json({ success: false, message: 'A rejection reason is required' });
+      }
+
+      const withdrawal = await Withdrawal.findOne({ _id: req.params.id, status: 'pending' });
+      if (!withdrawal) return res.status(404).json({ success: false, message: 'Pending withdrawal not found' });
+
+      withdrawal.status = 'rejected';
+      withdrawal.rejectionReason = reason.trim();
+      withdrawal.resolvedBy = req.user.id;
+      withdrawal.resolvedAt = new Date();
+      await withdrawal.save();
+
+      // Refund the reserved amount back to the provider's withdrawable balance.
+      const provider = await ServiceProvider.findByIdAndUpdate(
+        withdrawal.provider,
+        { $inc: { 'wallet.balance': withdrawal.amount } },
+        { new: true }
+      ).populate('user', 'fullName email');
+
+      if (provider?.user) {
+        await notifyUser(provider.user._id, {
+          text: `❌ Your withdrawal of ₦${withdrawal.amount.toLocaleString()} was rejected. Reason: ${withdrawal.rejectionReason}. The amount is back in your available balance.`,
+          kind: 'action'
+        });
+        try {
+          await emailService.sendWithdrawalRejectedEmail(provider.user, {
+            amount: withdrawal.amount,
+            reason: withdrawal.rejectionReason
+          });
+        } catch (emailError) {
+          console.error('Withdrawal rejected email error:', emailError);
+        }
+      }
+
+      res.json({ success: true, message: 'Withdrawal rejected', data: { id: withdrawal._id, status: withdrawal.status } });
+    } catch (error) {
+      console.error('Reject withdrawal error:', error);
+      res.status(500).json({ success: false, message: 'Failed to reject withdrawal' });
+    }
   }
 }
 

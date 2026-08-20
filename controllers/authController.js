@@ -27,15 +27,19 @@ static async signup(req, res) {
         });
       }
 
-      // Validate provider fields
+      // Phone is required for every account type, not just providers.
+      if (!phone?.trim()) {
+        return res.status(400).json({ success: false, message: 'Required fields: Phone number' });
+      }
+
+      // Validate provider-only fields
       if (accountType === 'provider') {
         const missingFields = [];
         if (!companyName?.trim()) missingFields.push('Company name');
         if (!serviceType?.trim()) missingFields.push('Service type');
         if (!state?.trim()) missingFields.push('State');
         if (!city?.trim()) missingFields.push('City');
-        if (!phone?.trim()) missingFields.push('Phone number');
-        
+
         if (missingFields.length > 0) {
           return res.status(400).json({ success: false, message: `Required fields: ${missingFields.join(', ')}` });
         }

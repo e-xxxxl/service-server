@@ -15,6 +15,13 @@ const transactionSchema = new mongoose.Schema({
   workmanshipCost: { type: Number, default: 0 },
   platformCommission: { type: Number, default: 0 },
   providerPayout: { type: Number, default: 0 }, // amount actually credited to the provider's wallet
+  // Escrow split: materials/other costs release to the wallet in full on
+  // payment, workmanship releases 60% on payment and holds back 40% here
+  // until the customer confirms the job completed (see
+  // customerController.confirmJobCompletion, the only place that clears
+  // workmanshipHeldReleasedAt).
+  workmanshipHeld: { type: Number, default: 0 },
+  workmanshipHeldReleasedAt: Date,
   status: { type: String, enum: ['pending', 'success', 'failed'], default: 'pending', index: true },
   paystackData: {
     authorizationUrl: String,

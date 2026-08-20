@@ -6,6 +6,7 @@ const Notification = require('../models/Notification');
 const Favorite = require('../models/Favorite');
 const JobPosting = require('../models/JobPosting');
 const Review = require('../models/Review');
+const Transaction = require('../models/Transaction');
 const { notifyUser } = require('../services/notificationService');
 const { emitNewMessage } = require('../socket');
 const { getJobQuote } = require('../utils/jobSummary');
@@ -812,14 +813,31 @@ static async rejectQuote(req, res) {
       conversation.providerUnread = true;
       const saved = await conversation.save();
 
+      // Release this job's held 40% workmanship slice, if any. The atomic
+      // claim (workmanshipHeldReleasedAt still null) guards against
+      // double-crediting if this ever ran twice for the same job.
+      const releasedTx = await Transaction.findOneAndUpdate(
+        { conversation: conversation._id, status: 'success', workmanshipHeld: { $gt: 0 }, workmanshipHeldReleasedAt: null },
+        { workmanshipHeldReleasedAt: new Date() }
+      );
+
+      const walletIncrements = { completedJobs: 1 };
+      if (releasedTx) {
+        walletIncrements['wallet.balance'] = releasedTx.workmanshipHeld;
+        walletIncrements['wallet.pendingEarnings'] = -releasedTx.workmanshipHeld;
+      }
+
       const provider = await ServiceProvider.findByIdAndUpdate(
         conversation.professional,
-        { $inc: { completedJobs: 1 } },
+        { $inc: walletIncrements },
         { new: true }
       );
       if (provider) {
+        const releaseText = releasedTx
+          ? ` The remaining ₦${releasedTx.workmanshipHeld.toLocaleString()} workmanship balance is now available to withdraw.`
+          : '';
         await notifyUser(provider.user, {
-          text: '🎉 The customer confirmed your job as completed.',
+          text: `🎉 The customer confirmed your job as completed.${releaseText}`,
           kind: 'success',
           relatedConversation: conversation._id
         });
