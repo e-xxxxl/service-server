@@ -15,22 +15,25 @@ const uploadSelfie = multer({
   limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-// Combined upload for profile setup - the selfie must be a PNG photo, but
-// the NIN document is commonly a scanned PDF slip, so that field also
-// accepts application/pdf. Client-side <input accept> is a UX hint only,
-// this fileFilter is what actually enforces it.
+// Combined upload for profile setup - any image format is accepted for
+// both fields (jpg, png, gif, webp, heic, etc.), and the NIN document also
+// accepts application/pdf since NIN slips are commonly scanned as PDFs.
+// Video (e.g. mp4) is explicitly not an image/pdf mimetype so it's
+// rejected by the same check without needing its own blocklist. Client-side
+// <input accept> is a UX hint only, this fileFilter is what actually
+// enforces it.
 const uploadProfileSetup = multer({
   storage: multer.diskStorage({}), // Temporary, we'll handle per-field
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = file.fieldname === 'ninDocument'
-      ? ['image/png', 'application/pdf']
-      : ['image/png'];
-    if (!allowed.includes(file.mimetype)) {
+    const isImage = file.mimetype.startsWith('image/');
+    const isPdf = file.mimetype === 'application/pdf';
+    const allowed = file.fieldname === 'ninDocument' ? (isImage || isPdf) : isImage;
+    if (!allowed) {
       const err = new Error(
         file.fieldname === 'ninDocument'
-          ? 'NIN document must be a PNG image or a PDF'
-          : 'Selfie photo must be a PNG image'
+          ? 'NIN document must be an image or a PDF'
+          : 'Selfie photo must be an image'
       );
       err.statusCode = 400;
       return cb(err);
