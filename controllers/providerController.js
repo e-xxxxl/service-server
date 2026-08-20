@@ -220,8 +220,7 @@ static async resubmitVerification(req, res) {
 
       const updateData = {
         verificationStatus: 'submitted',
-        rejectionReason: null,
-        $inc: { resubmissionCount: 1 }
+        rejectionReason: null
       };
 
       // Delete old documents from Cloudinary if new ones are uploaded
@@ -255,7 +254,7 @@ static async resubmitVerification(req, res) {
 
       await ServiceProvider.findOneAndUpdate(
         { user: userId },
-        { $set: updateData }
+        { $set: updateData, $inc: { resubmissionCount: 1 } }
       );
 
       await notifyUser(userId, {
