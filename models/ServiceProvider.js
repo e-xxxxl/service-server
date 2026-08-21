@@ -164,7 +164,23 @@ const serviceProviderSchema = new mongoose.Schema({
   // Add inside serviceProviderSchema (near the other fields)
 reminderSent1hr: { type: Boolean, default: false },
 reminderSent24hr: { type: Boolean, default: false },
-  
+
+  // A provider is only visible/contactable/able to use the job board while
+  // approved AND subscription.expiresAt is in the future. expiresAt is the
+  // single source of truth for enforcement (checked live wherever it
+  // matters) - isActive is a cached convenience flag kept in sync by the
+  // subscription scheduler (see services/schedulerService.js) purely for
+  // cheap admin-list filtering and reminder-email triggers, never trusted
+  // on its own for gating.
+  subscription: {
+    isActive: { type: Boolean, default: false },
+    expiresAt: Date,
+    lastPaidAt: Date,
+    expiringReminderSentFor: Date, // dedupe key: the expiresAt value a "renew soon" email was already sent for
+    expiredReminderSentFor: Date,  // dedupe key: the expiresAt value the one-time "just expired" email was already sent for
+    lastSubscriptionNagAt: Date    // throttle: periodic (weekly) re-nag while still unsubscribed, for providers who never subscribed or lapsed long ago
+  },
+
   // Last active
   lastActive: { type: Date, default: Date.now }
   

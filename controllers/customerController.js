@@ -143,7 +143,10 @@ static async searchProfessionals(req, res) {
       const filter = {
         isAvailable: true,
         isVisible: true,
-        verificationStatus: 'approved'
+        verificationStatus: 'approved',
+        // Providers only show up in search while their monthly subscription
+        // is active - checked live against expiresAt, not a cached flag.
+        'subscription.expiresAt': { $gt: new Date() }
       };
 
       if (category && category.trim()) {
@@ -494,7 +497,7 @@ static async sendMessage(req, res) {
       }
 
       // Verify the professional exists
-      const professional = await ServiceProvider.findById(professionalId).select('user companyName');
+      const professional = await ServiceProvider.findById(professionalId).select('user companyName subscription');
       if (!professional) {
         return res.status(404).json({
           success: false,
@@ -509,6 +512,13 @@ static async sendMessage(req, res) {
       });
 
       if (!conversation) {
+        // Only new conversations are gated on an active subscription - a
+        // provider whose subscription lapses mid-job keeps working existing
+        // conversations, this only blocks new customer contact.
+        const isSubscribed = professional.subscription?.expiresAt && professional.subscription.expiresAt > new Date();
+        if (!isSubscribed) {
+          return res.status(403).json({ success: false, message: 'This provider is not currently accepting new messages' });
+        }
         conversation = await Conversation.create({
           customer: userId,
           professional: professionalId,

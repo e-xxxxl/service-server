@@ -435,11 +435,17 @@ static async getDashboard(req, res) {
         success: true,
         data: {
           providerName: user.fullName?.split(' ')[0] || 'Pro',
+          email: user.email,
           companyName: provider.companyName,
           profileCompletion: provider.profileCompletionScore || 0,
           verificationStatus: provider.verificationStatus,
           rejectionReason: provider.rejectionReason,
           isVisible: provider.isVisible,
+          subscription: {
+            isActive: !!(provider.subscription?.expiresAt && provider.subscription.expiresAt > new Date()),
+            expiresAt: provider.subscription?.expiresAt || null,
+            fee: 10000
+          },
           activeJobs: activeConversations.map(toJobSummary),
           recentMessages: recentConversations.map(conv => ({
             id: conv._id,

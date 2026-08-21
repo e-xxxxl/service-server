@@ -3,10 +3,17 @@ const mongoose = require('mongoose');
 
 const transactionSchema = new mongoose.Schema({
   reference: { type: String, required: true, unique: true, index: true },
+  // 'job_payment' (default): customer pays provider for a job, conversation
+  // and messageId are required and everything below the type field applies.
+  // 'subscription': provider pays the platform for their monthly access fee
+  // - `customer` holds the provider's own linked User id (the payer),
+  // `conversation`/`messageId` are not applicable, and workmanship/escrow
+  // fields stay at their defaults.
+  type: { type: String, enum: ['job_payment', 'subscription'], default: 'job_payment', index: true },
   customer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   provider: { type: mongoose.Schema.Types.ObjectId, ref: 'ServiceProvider', required: true },
-  conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', required: true, index: true },
-  messageId: { type: mongoose.Schema.Types.ObjectId, required: true },
+  conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', index: true },
+  messageId: { type: mongoose.Schema.Types.ObjectId },
   amount: { type: Number, required: true }, // NGN, major unit (not kobo) - full amount the customer pays
   currency: { type: String, default: 'NGN' },
   // Platform takes a commission out of the workmanship portion only, not

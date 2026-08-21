@@ -614,6 +614,133 @@ const sendWithdrawalRejectedEmail = async (user, data) => {
   });
 };
 
+// -----------------------------------------------------------------------
+// Subscription Emails (to provider)
+// -----------------------------------------------------------------------
+
+const getSubscriptionRequiredEmailTemplate = (user, { fee = 10000 } = {}) => {
+  const firstName = user.fullName?.split(' ')[0] || 'there';
+  const walletUrl = `${process.env.CLIENT_URL}/provider-dashboard`;
+
+  const body = `
+    ${eyebrow('Subscription Required')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      Subscribe to stay visible to customers, ${firstName}
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      9jaTradiesPages now runs on a ₦${fee.toLocaleString()}/month provider subscription. Your account currently
+      doesn't have an active subscription, so you won't show up in customer search, can't be contacted, and can't
+      view or apply to jobs until you subscribe.
+    </p>
+
+    ${button(walletUrl, `Subscribe for ₦${fee.toLocaleString()}/month`)}
+
+    ${note('Subscribing takes a minute and keeps you visible for 30 days from payment.')}
+  `;
+
+  return emailShell(`Subscribe for ₦${fee.toLocaleString()}/month to stay visible to customers.`, body);
+};
+
+const sendSubscriptionRequiredEmail = async (user, data) => {
+  const html = getSubscriptionRequiredEmailTemplate(user, data);
+  return sendEmail({
+    to: user.email,
+    subject: 'Action needed: subscribe to stay visible on 9jaTradiesPages',
+    html
+  });
+};
+
+const getSubscriptionExpiringEmailTemplate = (user, { expiresAt, fee = 10000 }) => {
+  const firstName = user.fullName?.split(' ')[0] || 'there';
+  const walletUrl = `${process.env.CLIENT_URL}/provider-dashboard`;
+  const dateStr = new Date(expiresAt).toLocaleDateString('en-NG', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  const body = `
+    ${eyebrow('Subscription Expiring Soon')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      Your subscription expires ${dateStr}
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      Hi ${firstName}, your ₦${fee.toLocaleString()}/month subscription is about to end. Renew before then so you
+      stay visible to customers, contactable, and able to view and apply to jobs without interruption.
+    </p>
+
+    ${button(walletUrl, `Renew for ₦${fee.toLocaleString()}`)}
+  `;
+
+  return emailShell(`Your subscription expires ${dateStr} - renew to stay visible.`, body);
+};
+
+const sendSubscriptionExpiringEmail = async (user, data) => {
+  const html = getSubscriptionExpiringEmailTemplate(user, data);
+  return sendEmail({
+    to: user.email,
+    subject: 'Your 9jaTradiesPages subscription expires soon',
+    html
+  });
+};
+
+const getSubscriptionExpiredEmailTemplate = (user, { fee = 10000 } = {}) => {
+  const firstName = user.fullName?.split(' ')[0] || 'there';
+  const walletUrl = `${process.env.CLIENT_URL}/provider-dashboard`;
+
+  const body = `
+    ${eyebrow('Subscription Expired')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      Your subscription has expired, ${firstName}
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      You're no longer visible in customer search, can't be contacted by new customers, and can't view or apply
+      to jobs. Renew any time to come straight back online.
+    </p>
+
+    ${button(walletUrl, `Renew for ₦${fee.toLocaleString()}`)}
+
+    ${note('Any job you already have in progress is unaffected - this only blocks new customer contact.')}
+  `;
+
+  return emailShell('Your subscription has expired - renew to become visible again.', body);
+};
+
+const sendSubscriptionExpiredEmail = async (user, data) => {
+  const html = getSubscriptionExpiredEmailTemplate(user, data);
+  return sendEmail({
+    to: user.email,
+    subject: 'Your 9jaTradiesPages subscription has expired',
+    html
+  });
+};
+
+const getSubscriptionConfirmedEmailTemplate = (user, { expiresAt, amount }) => {
+  const firstName = user.fullName?.split(' ')[0] || 'there';
+  const walletUrl = `${process.env.CLIENT_URL}/provider-dashboard`;
+  const dateStr = new Date(expiresAt).toLocaleDateString('en-NG', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  const body = `
+    ${eyebrow('Subscription Active')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      You're all set, ${firstName}
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      Your payment of <strong>₦${amount.toLocaleString()}</strong> was confirmed. You're visible to customers,
+      contactable, and able to view and apply to jobs until <strong>${dateStr}</strong>.
+    </p>
+
+    ${button(walletUrl, 'Go to your dashboard')}
+  `;
+
+  return emailShell(`Subscription active until ${dateStr}.`, body);
+};
+
+const sendSubscriptionConfirmedEmail = async (user, data) => {
+  const html = getSubscriptionConfirmedEmailTemplate(user, data);
+  return sendEmail({
+    to: user.email,
+    subject: 'Subscription confirmed - you\'re visible to customers',
+    html
+  });
+};
+
 module.exports = {
   sendEmail,
   sendVerificationEmail,
@@ -626,6 +753,10 @@ module.exports = {
   sendWithdrawalRequestedEmail,
   sendWithdrawalApprovedEmail,
   sendWithdrawalRejectedEmail,
+  sendSubscriptionRequiredEmail,
+  sendSubscriptionExpiringEmail,
+  sendSubscriptionExpiredEmail,
+  sendSubscriptionConfirmedEmail,
   getVerificationEmailTemplate,
   getWelcomeEmailTemplate,
   getResetPasswordEmailTemplate,
@@ -635,7 +766,11 @@ module.exports = {
   getPaymentConfirmationEmailTemplate,
   getWithdrawalRequestedEmailTemplate,
   getWithdrawalApprovedEmailTemplate,
-  getWithdrawalRejectedEmailTemplate
+  getWithdrawalRejectedEmailTemplate,
+  getSubscriptionRequiredEmailTemplate,
+  getSubscriptionExpiringEmailTemplate,
+  getSubscriptionExpiredEmailTemplate,
+  getSubscriptionConfirmedEmailTemplate
 };
 
 // module.exports = {

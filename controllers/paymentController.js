@@ -25,6 +25,50 @@ const COMMISSION_ENABLED = false;
 // completed (see customerController.confirmJobCompletion).
 const WORKMANSHIP_IMMEDIATE_RELEASE_RATE = 0.6;
 
+const SUBSCRIPTION_FEE = 10000; // NGN/month
+const SUBSCRIPTION_DURATION_DAYS = 30;
+
+// Runs once a subscription payment is confirmed successful. Extends from
+// the provider's current expiry if they're renewing early (not yet
+// expired), otherwise from now - so paying before expiry never wastes the
+// remaining days.
+async function fulfillSubscriptionPayment(transaction) {
+  const provider = await ServiceProvider.findById(transaction.provider).populate('user', 'fullName email');
+  if (!provider) {
+    console.error('Subscription fulfillment: provider not found', transaction.provider);
+    return;
+  }
+
+  const now = new Date();
+  const currentExpiry = provider.subscription?.expiresAt;
+  const base = currentExpiry && currentExpiry > now ? currentExpiry : now;
+  const newExpiresAt = new Date(base.getTime() + SUBSCRIPTION_DURATION_DAYS * 24 * 60 * 60 * 1000);
+
+  provider.subscription = {
+    ...provider.subscription,
+    isActive: true,
+    expiresAt: newExpiresAt,
+    lastPaidAt: now,
+    // Clear reminder dedupe keys so the next cycle's reminders can fire.
+    expiringReminderSentFor: undefined,
+    expiredReminderSentFor: undefined
+  };
+  await provider.save();
+
+  if (provider.user) {
+    await notifyUser(provider.user._id, {
+      text: `✅ Subscription payment of ₦${transaction.amount.toLocaleString()} confirmed. You're active and visible to customers until ${newExpiresAt.toLocaleDateString('en-NG', { day: 'numeric', month: 'long', year: 'numeric' })}.`,
+      kind: 'success'
+    });
+
+    try {
+      await emailService.sendSubscriptionConfirmedEmail(provider.user, { expiresAt: newExpiresAt, amount: transaction.amount });
+    } catch (emailError) {
+      console.error('Subscription confirmation email failed:', emailError.message);
+    }
+  }
+}
+
 // Runs once a Paystack payment is confirmed successful, whichever of the
 // webhook or the /verify fallback gets there first. `transaction` must
 // already be the freshly-flipped ('pending' -> 'success') document — the
@@ -32,6 +76,10 @@ const WORKMANSHIP_IMMEDIATE_RELEASE_RATE = 0.6;
 // idempotent, so this function assumes it is only ever called once per
 // transaction.
 async function fulfillPayment(transaction) {
+  if (transaction.type === 'subscription') {
+    return fulfillSubscriptionPayment(transaction);
+  }
+
   const conversation = await Conversation.findById(transaction.conversation);
   if (!conversation) {
     console.error('Payment fulfillment: conversation not found', transaction.conversation);
@@ -224,6 +272,50 @@ class PaymentController {
     } catch (error) {
       console.error('Payment initialize error:', error);
       res.status(500).json({ success: false, message: 'Failed to start payment. Please try again.' });
+    }
+  }
+
+  // POST /api/payment/subscription/initialize (provider only)
+  static async initializeSubscription(req, res) {
+    try {
+      const userId = req.user.id;
+      const provider = await ServiceProvider.findOne({ user: userId });
+      if (!provider) {
+        return res.status(404).json({ success: false, message: 'Provider profile not found' });
+      }
+
+      const user = await User.findById(userId);
+      const reference = `SUB-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+
+      const paystackData = await paystackService.initializeTransaction({
+        email: user.email,
+        amountNaira: SUBSCRIPTION_FEE,
+        reference,
+        callbackUrl: `${process.env.CLIENT_URL}/provider-dashboard?subscription=callback&reference=${reference}`,
+        metadata: { providerId: provider._id.toString(), type: 'subscription' }
+      });
+
+      await Transaction.create({
+        reference,
+        type: 'subscription',
+        customer: userId, // the provider's own User id - they're the payer here
+        provider: provider._id,
+        amount: SUBSCRIPTION_FEE,
+        providerPayout: 0, // subscription fees don't credit the provider's wallet
+        status: 'pending',
+        paystackData: {
+          authorizationUrl: paystackData.authorization_url,
+          accessCode: paystackData.access_code
+        }
+      });
+
+      res.json({
+        success: true,
+        data: { authorizationUrl: paystackData.authorization_url, reference, amount: SUBSCRIPTION_FEE }
+      });
+    } catch (error) {
+      console.error('Subscription initialize error:', error);
+      res.status(500).json({ success: false, message: 'Failed to start subscription payment. Please try again.' });
     }
   }
 

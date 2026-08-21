@@ -19,7 +19,7 @@ const supportRoutes = require('./routes/supportRoutes');
 const PaymentController = require('./controllers/paymentController');
 
 // ✅ Import scheduler
-const { scheduleReminderEmails } = require('./services/schedulerService');
+const { scheduleReminderEmails, scheduleSubscriptionReminders } = require('./services/schedulerService');
 
 const app = express();
 const server = http.createServer(app);
@@ -90,7 +90,8 @@ const startServer = async () => {
   
   // ✅ Start the reminder email scheduler
   scheduleReminderEmails();
-  
+  scheduleSubscriptionReminders();
+
   server.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`🔌 Socket.io ready for connections`);

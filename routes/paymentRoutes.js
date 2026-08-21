@@ -12,6 +12,7 @@ const { protect } = require('../middleware/auth');
 router.use(protect);
 
 router.post('/initialize', PaymentController.initialize);
+router.post('/subscription/initialize', PaymentController.initializeSubscription);
 router.get('/verify/:reference', PaymentController.verify);
 
 module.exports = router;

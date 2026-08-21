@@ -50,7 +50,9 @@ static async getDashboard(req, res) {
         ongoingJobsCount,
         allTimeRevenueAgg,
         totalProviderBalanceAgg,
-        pendingWithdrawalsCount
+        pendingWithdrawalsCount,
+        subscriptionRevenueAgg,
+        activeSubscriptionsCount
       ] = await Promise.all([
         // ✅ Only verified users (email confirmed)
         User.countDocuments({ isEmailVerified: true, accountType: { $ne: 'admin' } }),
@@ -86,7 +88,14 @@ static async getDashboard(req, res) {
         ServiceProvider.aggregate([
           { $group: { _id: null, available: { $sum: '$wallet.balance' }, pending: { $sum: '$wallet.pendingEarnings' } } }
         ]),
-        Withdrawal.countDocuments({ status: 'pending' })
+        Withdrawal.countDocuments({ status: 'pending' }),
+        // All-time revenue from provider subscriptions specifically, separate
+        // from job-payment gross volume above.
+        Transaction.aggregate([
+          { $match: { status: 'success', type: 'subscription' } },
+          { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+        ]),
+        ServiceProvider.countDocuments({ 'subscription.expiresAt': { $gt: new Date() } })
       ]);
 
       const todayRevenue = todayRevenueAgg[0]?.total || 0;
@@ -96,6 +105,8 @@ static async getDashboard(req, res) {
       const totalProviderBalanceAvailable = totalProviderBalanceAgg[0]?.available || 0;
       const totalProviderBalanceHeld = totalProviderBalanceAgg[0]?.pending || 0;
       const totalProviderBalanceNet = totalProviderBalanceAvailable + totalProviderBalanceHeld;
+      const subscriptionRevenueTotal = subscriptionRevenueAgg[0]?.total || 0;
+      const subscriptionPaymentsCount = subscriptionRevenueAgg[0]?.count || 0;
 
       res.json({
         success: true,
@@ -116,7 +127,10 @@ static async getDashboard(req, res) {
             totalProviderBalanceHeld,
             totalProviderBalanceNet,
             pendingWithdrawalsCount,
-            ongoingJobsCount
+            ongoingJobsCount,
+            subscriptionRevenueTotal,
+            subscriptionPaymentsCount,
+            activeSubscriptionsCount
           },
           recentProviders: recentProviders.map(p => ({
             id: p._id, companyName: p.companyName, fullName: p.user?.fullName,
@@ -280,14 +294,20 @@ static async approveProvider(req, res) {
         kind: 'success'
       });
 
-      // Try sending email
+      // Try sending emails - approval, then (since approval alone doesn't
+      // make them visible - an active subscription is also required) a
+      // nudge to subscribe right away rather than waiting for the next
+      // daily scheduler pass.
       try {
         const emailService = require('../services/emailService');
         await emailService.sendApprovalEmail(provider.user, provider);
+        if (!provider.subscription?.expiresAt || provider.subscription.expiresAt <= new Date()) {
+          await emailService.sendSubscriptionRequiredEmail(provider.user, { fee: 10000 });
+        }
       } catch (e) { console.error('Approval email failed:', e.message); }
 
-      res.json({ 
-        success: true, 
+      res.json({
+        success: true,
         message: 'Provider approved successfully!',
         data: {
           _id: provider._id,
@@ -747,6 +767,157 @@ static async exportUsers(req, res) {
     } catch (error) {
       console.error('Reject withdrawal error:', error);
       res.status(500).json({ success: false, message: 'Failed to reject withdrawal' });
+    }
+  }
+
+  // DELETE /api/admin/jobs/:id - removes a job (Conversation). Payment
+  // records (Transaction) are never deleted here - they stay as the
+  // financial audit trail even if the conversation they originated from
+  // is gone, matching how deleteUser above doesn't cascade either.
+  static async deleteJob(req, res) {
+    try {
+      const conversation = await Conversation.findByIdAndDelete(req.params.id);
+      if (!conversation) return res.status(404).json({ success: false, message: 'Job not found' });
+      res.json({ success: true, message: 'Job deleted' });
+    } catch (error) {
+      console.error('Delete job error:', error);
+      res.status(500).json({ success: false, message: 'Failed to delete job' });
+    }
+  }
+
+  // GET /api/admin/subscriptions - every approved provider with their
+  // subscription state, optionally filtered by status.
+  static async getSubscriptions(req, res) {
+    try {
+      const { page = 1, limit = 20, status } = req.query;
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const now = new Date();
+
+      const filter = { verificationStatus: 'approved' };
+      if (status === 'active') filter['subscription.expiresAt'] = { $gt: now };
+      if (status === 'inactive') {
+        filter.$or = [
+          { 'subscription.expiresAt': { $exists: false } },
+          { 'subscription.expiresAt': null },
+          { 'subscription.expiresAt': { $lte: now } }
+        ];
+      }
+
+      const [providers, total] = await Promise.all([
+        ServiceProvider.find(filter)
+          .sort({ 'subscription.expiresAt': -1 })
+          .skip(skip).limit(parseInt(limit))
+          .populate('user', 'fullName email'),
+        ServiceProvider.countDocuments(filter)
+      ]);
+
+      res.json({
+        success: true,
+        data: providers.map(p => ({
+          id: p._id,
+          companyName: p.companyName,
+          fullName: p.user?.fullName,
+          email: p.user?.email,
+          isActive: !!(p.subscription?.expiresAt && p.subscription.expiresAt > now),
+          expiresAt: p.subscription?.expiresAt || null,
+          lastPaidAt: p.subscription?.lastPaidAt || null
+        })),
+        pagination: { total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) }
+      });
+    } catch (error) {
+      console.error('Get subscriptions error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load subscriptions' });
+    }
+  }
+
+  // GET /api/admin/subscriptions/transactions - subscription-payment
+  // history across every provider, separate from job-payment transactions.
+  static async getSubscriptionTransactions(req, res) {
+    try {
+      const { page = 1, limit = 20 } = req.query;
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const filter = { type: 'subscription', status: 'success' };
+
+      const [transactions, total] = await Promise.all([
+        Transaction.find(filter)
+          .sort({ paidAt: -1 })
+          .skip(skip).limit(parseInt(limit))
+          .populate({ path: 'provider', select: 'companyName user', populate: { path: 'user', select: 'fullName email' } }),
+        Transaction.countDocuments(filter)
+      ]);
+
+      res.json({
+        success: true,
+        data: transactions.map(t => ({
+          id: t._id,
+          reference: t.reference,
+          amount: t.amount,
+          companyName: t.provider?.companyName,
+          fullName: t.provider?.user?.fullName,
+          email: t.provider?.user?.email,
+          paidAt: t.paidAt
+        })),
+        pagination: { total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) }
+      });
+    } catch (error) {
+      console.error('Get subscription transactions error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load subscription transactions' });
+    }
+  }
+
+  // PATCH /api/admin/providers/:id/subscription - manual override: either
+  // grant `extendDays` more from their current expiry (or now, whichever is
+  // later), or set an explicit `expiresAt`, or deactivate immediately.
+  static async updateProviderSubscription(req, res) {
+    try {
+      const { extendDays, expiresAt, deactivate } = req.body;
+      const provider = await ServiceProvider.findById(req.params.id).populate('user', 'fullName email');
+      if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+
+      const now = new Date();
+      let newExpiresAt;
+
+      if (deactivate) {
+        newExpiresAt = now;
+      } else if (expiresAt) {
+        newExpiresAt = new Date(expiresAt);
+        if (Number.isNaN(newExpiresAt.getTime())) {
+          return res.status(400).json({ success: false, message: 'Invalid expiresAt date' });
+        }
+      } else if (extendDays) {
+        const base = provider.subscription?.expiresAt && provider.subscription.expiresAt > now ? provider.subscription.expiresAt : now;
+        newExpiresAt = new Date(base.getTime() + Number(extendDays) * 24 * 60 * 60 * 1000);
+      } else {
+        return res.status(400).json({ success: false, message: 'Provide extendDays, expiresAt, or deactivate' });
+      }
+
+      provider.subscription = {
+        ...provider.subscription,
+        isActive: newExpiresAt > now,
+        expiresAt: newExpiresAt,
+        // Clear dedupe keys so reminder emails behave correctly for this new state.
+        expiringReminderSentFor: undefined,
+        expiredReminderSentFor: undefined
+      };
+      await provider.save();
+
+      if (provider.user) {
+        await notifyUser(provider.user._id, {
+          text: deactivate
+            ? '⚠️ An admin has deactivated your subscription.'
+            : `✅ An admin updated your subscription. Active until ${newExpiresAt.toLocaleDateString('en-NG', { day: 'numeric', month: 'long', year: 'numeric' })}.`,
+          kind: deactivate ? 'action' : 'success'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Subscription updated',
+        data: { isActive: newExpiresAt > now, expiresAt: newExpiresAt }
+      });
+    } catch (error) {
+      console.error('Update provider subscription error:', error);
+      res.status(500).json({ success: false, message: 'Failed to update subscription' });
     }
   }
 }

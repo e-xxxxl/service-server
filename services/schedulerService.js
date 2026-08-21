@@ -117,6 +117,120 @@ const sendReminderEmail = async (provider, type) => {
   });
 };
 
+// Guards against overlapping ticks, same reasoning as reminderRunInProgress above.
+let subscriptionRunInProgress = false;
+const SUBSCRIPTION_FEE = 10000;
+const EXPIRING_SOON_WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
+const NAG_THROTTLE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// Three independent, atomically-claimed buckets - each provider can only
+// ever be claimed once per email per cycle (see the dedupe fields on
+// ServiceProvider.subscription), so overlapping ticks or duplicate
+// processes can't double-send, the same fix already applied above for
+// verification reminders.
+const scheduleSubscriptionReminders = () => {
+  cron.schedule('0 8 * * *', async () => { // once daily, 08:00 server time
+    if (subscriptionRunInProgress) {
+      console.log('⏭️  Skipping subscription check - previous run still in progress');
+      return;
+    }
+    subscriptionRunInProgress = true;
+    try {
+      console.log('💳 Checking provider subscriptions...');
+      const now = new Date();
+
+      // Bucket A: expiring within 3 days, not yet reminded for this expiry cycle.
+      const expiringSoon = await ServiceProvider.find({
+        verificationStatus: 'approved',
+        'subscription.isActive': true,
+        'subscription.expiresAt': { $gt: now, $lte: new Date(now.getTime() + EXPIRING_SOON_WINDOW_MS) }
+      }).populate('user', 'email fullName');
+
+      for (const provider of expiringSoon) {
+        if (!provider.user) continue;
+        const expiresAt = provider.subscription.expiresAt;
+        if (provider.subscription.expiringReminderSentFor?.getTime() === expiresAt.getTime()) continue;
+
+        const claimed = await ServiceProvider.findOneAndUpdate(
+          { _id: provider._id, 'subscription.expiresAt': expiresAt, 'subscription.expiringReminderSentFor': { $ne: expiresAt } },
+          { 'subscription.expiringReminderSentFor': expiresAt }
+        );
+        if (claimed) {
+          console.log(`📧 Sending subscription-expiring reminder to ${provider.user.email}`);
+          await emailService.sendSubscriptionExpiringEmail(provider.user, { expiresAt, fee: SUBSCRIPTION_FEE });
+        }
+      }
+
+      // Bucket B: just crossed the expiry line - one-time "expired" notice,
+      // and the moment isActive gets synced false to match reality.
+      const justExpired = await ServiceProvider.find({
+        verificationStatus: 'approved',
+        'subscription.isActive': true,
+        'subscription.expiresAt': { $lte: now }
+      }).populate('user', 'email fullName');
+
+      for (const provider of justExpired) {
+        if (!provider.user) continue;
+        const expiresAt = provider.subscription.expiresAt;
+
+        const claimed = await ServiceProvider.findOneAndUpdate(
+          { _id: provider._id, 'subscription.isActive': true, 'subscription.expiresAt': expiresAt },
+          { 'subscription.isActive': false, 'subscription.expiredReminderSentFor': expiresAt, 'subscription.lastSubscriptionNagAt': now }
+        );
+        if (claimed) {
+          console.log(`📧 Sending subscription-expired notice to ${provider.user.email}`);
+          await emailService.sendSubscriptionExpiredEmail(provider.user, { fee: SUBSCRIPTION_FEE });
+        }
+      }
+
+      // Bucket C: approved, currently unsubscribed (never subscribed or
+      // lapsed a while ago), periodic weekly re-nag so it's not a one-shot.
+      const staleNagCutoff = new Date(now.getTime() - NAG_THROTTLE_MS);
+      const needsNag = await ServiceProvider.find({
+        verificationStatus: 'approved',
+        $or: [
+          { 'subscription.expiresAt': { $exists: false } },
+          { 'subscription.expiresAt': null },
+          { 'subscription.expiresAt': { $lte: now } }
+        ],
+        $and: [
+          { $or: [
+            { 'subscription.lastSubscriptionNagAt': { $exists: false } },
+            { 'subscription.lastSubscriptionNagAt': null },
+            { 'subscription.lastSubscriptionNagAt': { $lte: staleNagCutoff } }
+          ] }
+        ]
+      }).populate('user', 'email fullName');
+
+      for (const provider of needsNag) {
+        if (!provider.user) continue;
+
+        const claimed = await ServiceProvider.findOneAndUpdate(
+          {
+            _id: provider._id,
+            $or: [
+              { 'subscription.lastSubscriptionNagAt': { $exists: false } },
+              { 'subscription.lastSubscriptionNagAt': null },
+              { 'subscription.lastSubscriptionNagAt': { $lte: staleNagCutoff } }
+            ]
+          },
+          { 'subscription.lastSubscriptionNagAt': now }
+        );
+        if (claimed) {
+          console.log(`📧 Sending subscription-required nag to ${provider.user.email}`);
+          await emailService.sendSubscriptionRequiredEmail(provider.user, { fee: SUBSCRIPTION_FEE });
+        }
+      }
+    } catch (error) {
+      console.error('Subscription scheduler error:', error);
+    } finally {
+      subscriptionRunInProgress = false;
+    }
+  });
+
+  console.log('✅ Subscription reminder scheduler started');
+};
+
 // Send admin notification on new signup
 const notifyAdminsOnSignup = async (user, accountType) => {
   try {
@@ -153,4 +267,4 @@ const notifyAdminsOnSignup = async (user, accountType) => {
   }
 };
 
-module.exports = { scheduleReminderEmails, notifyAdminsOnSignup };
+module.exports = { scheduleReminderEmails, scheduleSubscriptionReminders, notifyAdminsOnSignup };

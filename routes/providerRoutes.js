@@ -4,6 +4,7 @@ const router = express.Router();
 const multer = require('multer');
 const ProviderController = require('../controllers/providerController');
 const { protect, authorize } = require('../middleware/auth');
+const { requireActiveSubscription } = require('../middleware/requireSubscription');
 
 // Uploads go to local temp disk first; ProviderController.uploadToCloudinary()
 // then streams the temp file to Cloudinary and deletes it. There is no
@@ -96,10 +97,12 @@ router.get('/jobs', ProviderController.getJobs);
 router.post('/jobs/:conversationId/start', ProviderController.startJob);
 router.post('/jobs/:conversationId/complete', ProviderController.completeJob);
 
-// Job postings (browse + apply)
-router.get('/job-postings', ProviderController.browseJobPostings);
+// Job postings (browse + apply) - gated on an active subscription; viewing
+// your own past applications isn't, so a lapsed provider can still see
+// where things stand.
+router.get('/job-postings', requireActiveSubscription, ProviderController.browseJobPostings);
 router.get('/job-postings/applied', ProviderController.getMyJobApplications);
-router.post('/job-postings/:id/apply', ProviderController.applyToJobPosting);
+router.post('/job-postings/:id/apply', requireActiveSubscription, ProviderController.applyToJobPosting);
 
 // Notifications
 router.get('/notifications', ProviderController.getNotifications);

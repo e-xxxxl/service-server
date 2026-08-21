@@ -37,6 +37,14 @@ router.get('/withdrawals', AdminController.getWithdrawals);
 router.patch('/withdrawals/:id/approve', uploadReceipt.single('receipt'), AdminController.approveWithdrawal);
 router.patch('/withdrawals/:id/reject', AdminController.rejectWithdrawal);
 
+// Jobs
+router.delete('/jobs/:id', AdminController.deleteJob);
+
+// Subscriptions
+router.get('/subscriptions', AdminController.getSubscriptions);
+router.get('/subscriptions/transactions', AdminController.getSubscriptionTransactions);
+router.patch('/providers/:id/subscription', AdminController.updateProviderSubscription);
+
 // Support/complaints - a real two-way chat with the reporting user, not a
 // one-off notification list.
 router.get('/support/threads', SupportController.listThreads);
