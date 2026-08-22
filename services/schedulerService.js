@@ -127,9 +127,11 @@ const NAG_THROTTLE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 // ever be claimed once per email per cycle (see the dedupe fields on
 // ServiceProvider.subscription), so overlapping ticks or duplicate
 // processes can't double-send, the same fix already applied above for
-// verification reminders.
-const scheduleSubscriptionReminders = () => {
-  cron.schedule('0 8 * * *', async () => { // once daily, 08:00 server time
+// verification reminders. Exported standalone (not just wrapped in the cron
+// callback below) so it can also be triggered on demand - e.g. running it
+// once right after this feature ships, instead of waiting for the next
+// scheduled 08:00 tick to notify existing providers.
+const runSubscriptionReminderTick = async () => {
     if (subscriptionRunInProgress) {
       console.log('⏭️  Skipping subscription check - previous run still in progress');
       return;
@@ -226,8 +228,10 @@ const scheduleSubscriptionReminders = () => {
     } finally {
       subscriptionRunInProgress = false;
     }
-  });
+};
 
+const scheduleSubscriptionReminders = () => {
+  cron.schedule('0 8 * * *', runSubscriptionReminderTick); // once daily, 08:00 server time
   console.log('✅ Subscription reminder scheduler started');
 };
 
@@ -267,4 +271,4 @@ const notifyAdminsOnSignup = async (user, accountType) => {
   }
 };
 
-module.exports = { scheduleReminderEmails, scheduleSubscriptionReminders, notifyAdminsOnSignup };
+module.exports = { scheduleReminderEmails, scheduleSubscriptionReminders, runSubscriptionReminderTick, notifyAdminsOnSignup, ADMIN_EMAILS };

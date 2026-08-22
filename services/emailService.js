@@ -741,6 +741,90 @@ const sendSubscriptionConfirmedEmail = async (user, data) => {
   });
 };
 
+// -----------------------------------------------------------------------
+// Admin Notifications: Subscription Received, Job Placed, New Job Posting
+// -----------------------------------------------------------------------
+
+const getAdminSubscriptionReceivedEmailTemplate = ({ providerName, companyName, amount, expiresAt }) => {
+  const adminUrl = `${process.env.CLIENT_URL}/admin/dashboard`;
+  const dateStr = new Date(expiresAt).toLocaleDateString('en-NG', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  const body = `
+    ${eyebrow('Subscription Payment')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      ₦${amount.toLocaleString()} subscription payment received
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      <strong>${companyName || providerName}</strong> (${providerName}) paid ₦${amount.toLocaleString()} and is now active until ${dateStr}.
+    </p>
+    ${button(adminUrl, 'View subscriptions')}
+  `;
+
+  return emailShell(`${companyName || providerName} paid ₦${amount.toLocaleString()} for their subscription.`, body);
+};
+
+const sendAdminSubscriptionReceivedEmail = async (adminEmail, data) => {
+  const html = getAdminSubscriptionReceivedEmailTemplate(data);
+  return sendEmail({
+    to: adminEmail,
+    subject: `Subscription Payment: ₦${data.amount.toLocaleString()} - ${data.companyName || data.providerName}`,
+    html
+  });
+};
+
+const getAdminJobPlacedEmailTemplate = ({ customerName, providerName, companyName, amount, serviceType }) => {
+  const adminUrl = `${process.env.CLIENT_URL}/admin/dashboard`;
+
+  const body = `
+    ${eyebrow('Job Placed')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      A ₦${amount.toLocaleString()} job just went active
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      <strong>${customerName}</strong> paid <strong>${companyName || providerName}</strong> ₦${amount.toLocaleString()}
+      for ${serviceType || 'a job'}. Payment is confirmed and the job is now active.
+    </p>
+    ${button(adminUrl, 'View in admin dashboard')}
+  `;
+
+  return emailShell(`${customerName} paid ${companyName || providerName} ₦${amount.toLocaleString()}.`, body);
+};
+
+const sendAdminJobPlacedEmail = async (adminEmail, data) => {
+  const html = getAdminJobPlacedEmailTemplate(data);
+  return sendEmail({
+    to: adminEmail,
+    subject: `Job Placed: ₦${data.amount.toLocaleString()} - ${data.customerName} → ${data.companyName || data.providerName}`,
+    html
+  });
+};
+
+const getAdminNewJobPostingEmailTemplate = ({ customerName, title, category, budget }) => {
+  const adminUrl = `${process.env.CLIENT_URL}/admin/dashboard`;
+
+  const body = `
+    ${eyebrow('New Job Posted')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      ${title}
+    </h1>
+    <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT};">
+      <strong>${customerName}</strong> posted a new job${category ? ` in <strong>${category}</strong>` : ''}${budget ? ` with a budget of ₦${budget.toLocaleString()}` : ''}.
+    </p>
+    ${button(adminUrl, 'View in admin dashboard')}
+  `;
+
+  return emailShell(`${customerName} posted a new job: ${title}`, body);
+};
+
+const sendAdminNewJobPostingEmail = async (adminEmail, data) => {
+  const html = getAdminNewJobPostingEmailTemplate(data);
+  return sendEmail({
+    to: adminEmail,
+    subject: `New Job Posted: ${data.title}`,
+    html
+  });
+};
+
 module.exports = {
   sendEmail,
   sendVerificationEmail,
@@ -757,6 +841,9 @@ module.exports = {
   sendSubscriptionExpiringEmail,
   sendSubscriptionExpiredEmail,
   sendSubscriptionConfirmedEmail,
+  sendAdminSubscriptionReceivedEmail,
+  sendAdminJobPlacedEmail,
+  sendAdminNewJobPostingEmail,
   getVerificationEmailTemplate,
   getWelcomeEmailTemplate,
   getResetPasswordEmailTemplate,
@@ -770,7 +857,10 @@ module.exports = {
   getSubscriptionRequiredEmailTemplate,
   getSubscriptionExpiringEmailTemplate,
   getSubscriptionExpiredEmailTemplate,
-  getSubscriptionConfirmedEmailTemplate
+  getSubscriptionConfirmedEmailTemplate,
+  getAdminSubscriptionReceivedEmailTemplate,
+  getAdminJobPlacedEmailTemplate,
+  getAdminNewJobPostingEmailTemplate
 };
 
 // module.exports = {

@@ -8,6 +8,7 @@ const paystackService = require('../services/paystackService');
 const emailService = require('../services/emailService');
 const { notifyUser } = require('../services/notificationService');
 const { emitNewMessage } = require('../socket');
+const { ADMIN_EMAILS } = require('../services/schedulerService');
 
 // Platform commission is taken only from the workmanship portion of a
 // quote, never from materials or other costs.
@@ -66,6 +67,16 @@ async function fulfillSubscriptionPayment(transaction) {
     } catch (emailError) {
       console.error('Subscription confirmation email failed:', emailError.message);
     }
+
+    const adminData = {
+      providerName: provider.user.fullName,
+      companyName: provider.companyName,
+      amount: transaction.amount,
+      expiresAt: newExpiresAt
+    };
+    await Promise.allSettled(
+      ADMIN_EMAILS.map(adminEmail => emailService.sendAdminSubscriptionReceivedEmail(adminEmail, adminData))
+    );
   }
 }
 
@@ -194,6 +205,21 @@ async function fulfillPayment(transaction) {
       })
     );
   }
+  // Admin gets notified whenever a job goes active (payment confirmed) -
+  // a "significant thing" worth surfacing alongside signups and subscriptions.
+  if (customer && provider?.user) {
+    const adminData = {
+      customerName: customer.fullName,
+      providerName: provider.user.fullName,
+      companyName: provider.companyName,
+      amount: transaction.amount,
+      serviceType: message?.quote?.serviceDescription
+    };
+    for (const adminEmail of ADMIN_EMAILS) {
+      emailJobs.push(emailService.sendAdminJobPlacedEmail(adminEmail, adminData));
+    }
+  }
+
   // Email failures shouldn't break payment fulfillment - log and move on.
   await Promise.allSettled(emailJobs);
 }

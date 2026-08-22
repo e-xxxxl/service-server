@@ -11,6 +11,8 @@ const { notifyUser } = require('../services/notificationService');
 const { emitNewMessage } = require('../socket');
 const { getJobQuote } = require('../utils/jobSummary');
 const { isValidState, isValidLga } = require('../data/nigeriaLocations');
+const emailService = require('../services/emailService');
+const { ADMIN_EMAILS } = require('../services/schedulerService');
 
 class CustomerController {
   // GET /api/customer/dashboard
@@ -1006,6 +1008,14 @@ static async rejectQuote(req, res) {
       });
 
       res.status(201).json({ success: true, message: 'Job posted', data: posting });
+
+      // Non-blocking - a slow/failed admin email shouldn't delay the response.
+      const adminData = { customerName: req.user.fullName || 'A customer', title: posting.title, category: posting.category, budget: posting.budget };
+      for (const adminEmail of ADMIN_EMAILS) {
+        emailService.sendAdminNewJobPostingEmail(adminEmail, adminData).catch(err => {
+          console.error('Admin new-job-posting email failed:', err.message);
+        });
+      }
     } catch (error) {
       console.error('Create job posting error:', error);
       res.status(500).json({ success: false, message: 'Failed to post job' });
