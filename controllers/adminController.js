@@ -6,6 +6,7 @@ const Conversation = require('../models/Conversation');
 const Notification = require('../models/Notification');
 const Transaction = require('../models/Transaction');
 const Withdrawal = require('../models/Withdrawal');
+const JobPosting = require('../models/JobPosting');
 const JWTService = require('../config/jwt');
 const emailService = require('../services/emailService');
 const ProviderController = require('./providerController');
@@ -782,6 +783,49 @@ static async exportUsers(req, res) {
     } catch (error) {
       console.error('Delete job error:', error);
       res.status(500).json({ success: false, message: 'Failed to delete job' });
+    }
+  }
+
+  // GET /api/admin/job-postings - every job a customer has posted to the
+  // job board, and who posted it. Separate from the paid-conversation
+  // "jobs" above - these are open listings providers apply to.
+  static async getJobPostings(req, res) {
+    try {
+      const { page = 1, limit = 20, status } = req.query;
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+
+      const filter = {};
+      if (status && status !== 'all') filter.status = status;
+
+      const [postings, total] = await Promise.all([
+        JobPosting.find(filter)
+          .sort({ createdAt: -1 })
+          .skip(skip).limit(parseInt(limit))
+          .populate('customer', 'fullName email'),
+        JobPosting.countDocuments(filter)
+      ]);
+
+      res.json({
+        success: true,
+        data: postings.map(p => ({
+          id: p._id,
+          title: p.title,
+          description: p.description,
+          category: p.category,
+          state: p.state,
+          city: p.city,
+          budget: p.budget || null,
+          status: p.status,
+          postedByName: p.customer?.fullName || 'Unknown',
+          postedByEmail: p.customer?.email || null,
+          applicantCount: p.applicants.length,
+          createdAt: p.createdAt
+        })),
+        pagination: { total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) }
+      });
+    } catch (error) {
+      console.error('Get job postings error:', error);
+      res.status(500).json({ success: false, message: 'Failed to load job postings' });
     }
   }
 

@@ -4,7 +4,7 @@ const { Resend } = require('resend');
 // Initialize Resend with your API key
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-const sendEmail = async ({ to, subject, html }) => {
+const sendEmail = async ({ to, subject, html, replyTo }) => {
   try {
     console.log('Attempting to send email...');
     console.log('   From:', process.env.EMAIL_FROM);
@@ -16,6 +16,7 @@ const sendEmail = async ({ to, subject, html }) => {
       to: Array.isArray(to) ? to : [to],
       subject: subject,
       html: html,
+      ...(replyTo ? { reply_to: replyTo } : {})
     });
 
     if (error) {
@@ -192,7 +193,7 @@ const getVerificationEmailTemplate = (user, verificationUrl) => {
     <p style="margin: 28px 0 0 0; font-size: 13.5px; line-height: 1.6; color: ${MUTED};">
       Questions? Reach us any time at <a href="mailto:support@9jatradiespages.com" style="color: ${ACCENT_DARK}; text-decoration: none;">support@9jatradiespages.com</a>.
     </p>
-  `;
+  `; 
 
   return emailShell('Confirm your email to activate your account.', body);
 };
@@ -825,6 +826,40 @@ const sendAdminNewJobPostingEmail = async (adminEmail, data) => {
   });
 };
 
+// -----------------------------------------------------------------------
+// Contact Form Submission (to the contact inbox)
+// -----------------------------------------------------------------------
+
+const getContactFormEmailTemplate = ({ name, email, subject, message }) => {
+  const body = `
+    ${eyebrow('Contact Form')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      New message from the contact page
+    </h1>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f7f8fa; border: 1px solid ${BORDER}; border-radius: 8px; margin: 0 0 20px 0;">
+      <tr><td style="padding: 16px 18px; font-size: 14px; line-height: 1.9; color: ${INK_SOFT};">
+        <strong style="color: ${INK};">From:</strong> ${name} (${email})<br />
+        <strong style="color: ${INK};">Subject:</strong> ${subject}
+      </td></tr>
+    </table>
+    <p style="margin: 0 0 6px 0; font-size: 13px; font-weight: 600; color: ${INK};">Message</p>
+    <p style="margin: 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT}; white-space: pre-wrap;">${message}</p>
+    ${note('Reply directly to this email to respond, it goes straight to the sender.')}
+  `;
+
+  return emailShell(`${name} sent a message: ${subject}`, body);
+};
+
+const sendContactFormEmail = async (adminEmail, data) => {
+  const html = getContactFormEmailTemplate(data);
+  return sendEmail({
+    to: adminEmail,
+    subject: `Contact form: ${data.subject}`,
+    html,
+    replyTo: data.email
+  });
+};
+
 module.exports = {
   sendEmail,
   sendVerificationEmail,
@@ -844,6 +879,7 @@ module.exports = {
   sendAdminSubscriptionReceivedEmail,
   sendAdminJobPlacedEmail,
   sendAdminNewJobPostingEmail,
+  sendContactFormEmail,
   getVerificationEmailTemplate,
   getWelcomeEmailTemplate,
   getResetPasswordEmailTemplate,
@@ -860,7 +896,8 @@ module.exports = {
   getSubscriptionConfirmedEmailTemplate,
   getAdminSubscriptionReceivedEmailTemplate,
   getAdminJobPlacedEmailTemplate,
-  getAdminNewJobPostingEmailTemplate
+  getAdminNewJobPostingEmailTemplate,
+  getContactFormEmailTemplate
 };
 
 // module.exports = {
