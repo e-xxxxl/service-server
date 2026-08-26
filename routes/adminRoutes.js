@@ -40,6 +40,7 @@ router.patch('/withdrawals/:id/reject', AdminController.rejectWithdrawal);
 // Jobs
 router.delete('/jobs/:id', AdminController.deleteJob);
 router.get('/job-postings', AdminController.getJobPostings);
+router.delete('/job-postings/:id', AdminController.deleteJobPosting);
 
 // Subscriptions
 router.get('/subscriptions', AdminController.getSubscriptions);

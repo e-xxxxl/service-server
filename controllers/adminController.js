@@ -73,14 +73,23 @@ static async getDashboard(req, res) {
           .sort({ createdAt: -1 }).limit(5).populate('user', 'fullName email'),
         User.find({ isEmailVerified: true, accountType: { $ne: 'admin' } })
           .sort({ createdAt: -1 }).limit(5),
+        // type: {$ne: 'subscription'} rather than type: 'job_payment' - some
+        // older transactions predate the `type` field entirely, so they have
+        // no `type` stored at all. Matching on "not subscription" correctly
+        // includes those (their absent field isn't equal to 'subscription'),
+        // where matching on the literal 'job_payment' string would silently
+        // miss them even though the schema default makes them display as
+        // job_payment once loaded.
         Transaction.aggregate([
-          { $match: { status: 'success', paidAt: { $gte: startOfToday } } },
+          { $match: { status: 'success', paidAt: { $gte: startOfToday }, type: { $ne: 'subscription' } } },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
         ]),
         Conversation.countDocuments({ bookingStatus: { $in: ['active', 'in_progress'] } }),
-        // All-time gross payment volume - not scoped to today, unlike todayRevenueAgg above.
+        // All-time gross job-payment volume - not scoped to today, unlike
+        // todayRevenueAgg above, and excludes subscription revenue (that's
+        // its own separate stat below).
         Transaction.aggregate([
-          { $match: { status: 'success' } },
+          { $match: { status: 'success', type: { $ne: 'subscription' } } },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
         ]),
         // Total net balance the platform currently owes across every
@@ -826,6 +835,18 @@ static async exportUsers(req, res) {
     } catch (error) {
       console.error('Get job postings error:', error);
       res.status(500).json({ success: false, message: 'Failed to load job postings' });
+    }
+  }
+
+  // DELETE /api/admin/job-postings/:id
+  static async deleteJobPosting(req, res) {
+    try {
+      const posting = await JobPosting.findByIdAndDelete(req.params.id);
+      if (!posting) return res.status(404).json({ success: false, message: 'Job posting not found' });
+      res.json({ success: true, message: 'Job posting deleted' });
+    } catch (error) {
+      console.error('Delete job posting error:', error);
+      res.status(500).json({ success: false, message: 'Failed to delete job posting' });
     }
   }
 
