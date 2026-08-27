@@ -296,7 +296,10 @@ const sendWelcomeEmail = async (user) => {
 };
 
 const sendPasswordResetEmail = async (user, token) => {
-  const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${token}`;
+  // Must match the route in App.jsx, which is a path param
+  // (/reset-password/:token, read via useParams in ResetPassword.jsx) -
+  // not a query string. Mismatching these sends users to the app's 404.
+  const resetUrl = `${process.env.CLIENT_URL}/reset-password/${token}`;
   const html = getResetPasswordEmailTemplate(user, resetUrl);
 
   return sendEmail({
