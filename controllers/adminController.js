@@ -419,6 +419,36 @@ static async rejectProvider(req, res) {
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
   }
 
+  // POST /api/admin/users/:id/message - sends a one-off email to a specific
+  // user, from admin@9jatradiespages.com rather than whatever EMAIL_FROM
+  // the rest of the app's automated emails use.
+  static async sendUserMessage(req, res) {
+    try {
+      const { subject, message } = req.body;
+      if (!subject?.trim() || !message?.trim()) {
+        return res.status(400).json({ success: false, message: 'Subject and message are both required' });
+      }
+
+      const user = await User.findById(req.params.id);
+      if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+      const result = await emailService.sendAdminDirectMessageEmail(user, {
+        subject: subject.trim().slice(0, 200),
+        message: message.trim().slice(0, 5000)
+      });
+
+      if (!result.success) {
+        console.error('Admin direct message email failed:', result.error);
+        return res.status(500).json({ success: false, message: 'Failed to send message' });
+      }
+
+      res.json({ success: true, message: 'Message sent' });
+    } catch (error) {
+      console.error('Send user message error:', error);
+      res.status(500).json({ success: false, message: 'Failed to send message' });
+    }
+  }
+
   // controllers/adminController.js - getAllQuotes
 static async getAllQuotes(req, res) {
     try {
@@ -579,7 +609,9 @@ static async updateUser(req, res) {
 // controllers/adminController.js - Fix export methods
 static async exportUsers(req, res) {
     try {
-      const users = await User.find({ isEmailVerified: true, accountType: { $in: ['customer', 'provider'] } })
+      // Customers only - providers have their own export endpoint, and this
+      // one is gated to super_admin in routes/adminRoutes.js.
+      const users = await User.find({ isEmailVerified: true, accountType: 'customer' })
         .select('fullName email phone accountType isActive createdAt lastLogin').lean();
       
       const csv = [

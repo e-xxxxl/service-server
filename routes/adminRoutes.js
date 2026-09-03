@@ -18,17 +18,25 @@ router.post('/login', AdminController.login);
 router.use(protect);
 router.use(authorize('admin'));
 
+const superAdminOnly = (req, res, next) => {
+  if (req.user.role !== 'super_admin') return res.status(403).json({ success: false, message: 'Super admin only' });
+  next();
+};
+
 router.get('/verify', (req, res) => res.json({ success: true, admin: { id: req.user.id, fullName: req.user.fullName, email: req.user.email, role: req.user.role } }));
 router.get('/dashboard', AdminController.getDashboard);
 router.get('/jobs/ongoing', AdminController.getOngoingJobs);
 router.get('/users', AdminController.getUsers);
 router.get('/providers', AdminController.getProviders);
-router.get('/export/users', AdminController.exportUsers);
+// Exporting the user list is a super-admin-only action, and only ever
+// returns customers - see AdminController.exportUsers.
+router.get('/export/users', superAdminOnly, AdminController.exportUsers);
 router.get('/export/providers', AdminController.exportProviders);
 router.patch('/providers/:id/approve', AdminController.approveProvider);
 router.patch('/providers/:id/reject', AdminController.rejectProvider);
 router.patch('/users/:id/toggle-status', AdminController.toggleUserStatus);
 router.delete('/users/:id', AdminController.deleteUser);
+router.post('/users/:id/message', AdminController.sendUserMessage);
 router.get('/customer-contacts', AdminController.getCustomerContacts);
 router.get('/provider-activity', AdminController.getProviderActivity);
 
@@ -56,10 +64,6 @@ router.patch('/support/threads/:id/resolve', SupportController.resolveThread);
 
 
 
-const superAdminOnly = (req, res, next) => {
-  if (req.user.role !== 'super_admin') return res.status(403).json({ success: false, message: 'Super admin only' });
-  next();
-};
 router.get('/admins', superAdminOnly, AdminController.getAdmins);
 // routes/adminRoutes.js
 router.get('/quotes', AdminController.getAllQuotes);

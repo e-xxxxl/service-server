@@ -4,15 +4,15 @@ const { Resend } = require('resend');
 // Initialize Resend with your API key
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-const sendEmail = async ({ to, subject, html, replyTo }) => {
+const sendEmail = async ({ to, subject, html, replyTo, from }) => {
   try {
     console.log('Attempting to send email...');
-    console.log('   From:', process.env.EMAIL_FROM);
+    console.log('   From:', from || process.env.EMAIL_FROM);
     console.log('   To:', to);
     console.log('   Subject:', subject);
 
     const { data, error } = await resend.emails.send({
-      from: process.env.EMAIL_FROM || '9jaTradiesPages <onboarding@resend.dev>',
+      from: from || process.env.EMAIL_FROM || '9jaTradiesPages <onboarding@resend.dev>',
       to: Array.isArray(to) ? to : [to],
       subject: subject,
       html: html,
@@ -863,6 +863,35 @@ const sendContactFormEmail = async (adminEmail, data) => {
   });
 };
 
+// -----------------------------------------------------------------------
+// Admin Direct Message (admin -> a specific user, from admin@9jatradiespages.com)
+// -----------------------------------------------------------------------
+
+const getAdminDirectMessageEmailTemplate = ({ recipientName, message }) => {
+  const firstName = recipientName?.split(' ')[0] || 'there';
+
+  const body = `
+    ${eyebrow('Message from 9jaTradiesPages')}
+    <h1 style="margin: 0 0 14px 0; font-size: 21px; line-height: 1.35; color: ${INK}; font-weight: 700;">
+      Hi ${firstName},
+    </h1>
+    <p style="margin: 0; font-size: 15px; line-height: 1.7; color: ${INK_SOFT}; white-space: pre-wrap;">${message}</p>
+    ${note('Reply directly to this email if you have any questions.')}
+  `;
+
+  return emailShell('A message from the 9jaTradiesPages team.', body);
+};
+
+const sendAdminDirectMessageEmail = async (user, { subject, message }) => {
+  const html = getAdminDirectMessageEmailTemplate({ recipientName: user.fullName, message });
+  return sendEmail({
+    to: user.email,
+    subject,
+    html,
+    from: '9jaTradiesPages Admin <admin@9jatradiespages.com>'
+  });
+};
+
 module.exports = {
   sendEmail,
   sendVerificationEmail,
@@ -883,6 +912,7 @@ module.exports = {
   sendAdminJobPlacedEmail,
   sendAdminNewJobPostingEmail,
   sendContactFormEmail,
+  sendAdminDirectMessageEmail,
   getVerificationEmailTemplate,
   getWelcomeEmailTemplate,
   getResetPasswordEmailTemplate,
@@ -900,7 +930,8 @@ module.exports = {
   getAdminSubscriptionReceivedEmailTemplate,
   getAdminJobPlacedEmailTemplate,
   getAdminNewJobPostingEmailTemplate,
-  getContactFormEmailTemplate
+  getContactFormEmailTemplate,
+  getAdminDirectMessageEmailTemplate
 };
 
 // module.exports = {

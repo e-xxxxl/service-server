@@ -1,6 +1,6 @@
 // models/ServiceProvider.js - FIXED
 const mongoose = require('mongoose');
-const { isValidState, isValidLga } = require('../data/nigeriaLocations');
+const { isValidState, makeCityValidator } = require('../data/nigeriaLocations');
 
 const serviceProviderSchema = new mongoose.Schema({
   user: {
@@ -73,10 +73,7 @@ const serviceProviderSchema = new mongoose.Schema({
     city: {
       type: String,
       validate: {
-        validator: function (value) {
-          if (!value) return true;
-          return isValidLga(this.businessAddress?.state, value);
-        },
+        validator: makeCityValidator('businessAddress.state'),
         message: (props) => `${props.value} is not a valid LGA/city for the selected state`
       }
     },
@@ -94,10 +91,7 @@ const serviceProviderSchema = new mongoose.Schema({
     trim: true,
     index: true,
     validate: {
-      validator: function (value) {
-        if (!value) return true;
-        return isValidLga(this.state, value);
-      },
+      validator: makeCityValidator('state'),
       message: (props) => `${props.value} is not a valid LGA/city for the selected state`
     }
   },
@@ -114,10 +108,7 @@ const serviceProviderSchema = new mongoose.Schema({
     city: {
       type: String,
       validate: {
-        validator: function (value) {
-          if (!value) return true;
-          return isValidLga(this.state, value);
-        },
+        validator: makeCityValidator('state'),
         message: (props) => `${props.value} is not a valid LGA/city for the selected state`
       }
     },

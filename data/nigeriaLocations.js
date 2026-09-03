@@ -207,4 +207,39 @@ function isValidLga(state, lga) {
   return NIGERIA_LOCATIONS[state].includes(lga);
 }
 
-module.exports = { NIGERIA_LOCATIONS, NIGERIA_STATES, isValidState, isValidLga };
+// Cross-field validators on a `city` field that check it against a sibling
+// `state` field work fine under plain document.save() (`this` is the
+// document, so `this.state` is reliable), but break under
+// findOneAndUpdate/findByIdAndUpdate with runValidators: true - there,
+// `this` is the query object instead, and sibling-field access like
+// `this.state` is always undefined regardless of what's actually being
+// set. That used to fail EVERY city on EVERY profile update through those
+// paths, not just genuinely invalid ones. This resolves the state value
+// from whichever context is actually present, and - if this particular
+// update doesn't touch the state field at all - skips the check rather
+// than false-rejecting (there's nothing new to cross-check: the state
+// already on the document, or validated together with city at the
+// controller level when both were provided, stands).
+function resolveStateForCityValidation(validatorThis, statePath) {
+  const getAtPath = (obj, path) => path.split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
+  if (typeof validatorThis.getUpdate === 'function') {
+    const update = validatorThis.getUpdate() || {};
+    const direct = getAtPath(update, statePath);
+    const viaSet = getAtPath(update.$set || {}, statePath);
+    return direct !== undefined ? direct : viaSet;
+  }
+  return getAtPath(validatorThis, statePath);
+}
+
+// statePath is the dot-path to the sibling `state` field relative to the
+// document root, e.g. 'state' or 'businessAddress.state'.
+function makeCityValidator(statePath) {
+  return function (value) {
+    if (!value) return true;
+    const state = resolveStateForCityValidation(this, statePath);
+    if (state === undefined) return true;
+    return isValidLga(state, value);
+  };
+}
+
+module.exports = { NIGERIA_LOCATIONS, NIGERIA_STATES, isValidState, isValidLga, makeCityValidator };

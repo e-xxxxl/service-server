@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
-const { isValidState, isValidLga } = require('../data/nigeriaLocations');
+const { isValidState, makeCityValidator } = require('../data/nigeriaLocations');
 
 const userSchema = new mongoose.Schema({
   email: {
@@ -44,10 +44,7 @@ const userSchema = new mongoose.Schema({
     type: String,
     trim: true,
     validate: {
-      validator: function (value) {
-        if (!value) return true;
-        return isValidLga(this.state, value);
-      },
+      validator: makeCityValidator('state'),
       message: (props) => `${props.value} is not a valid LGA/city for the selected state`
     }
   },
